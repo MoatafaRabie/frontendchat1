@@ -8,11 +8,7 @@ const App = () => {
 
   return (
     <div className="App">
-      <AuthContextProvider> 
-        <SocketContextProvider>
-          <RouterProvider router={router} />
-        </SocketContextProvider>
-      </AuthContextProvider>
+      <RouterProvider router={router} />
     </div>
   );
 }
