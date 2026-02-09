@@ -53,7 +53,7 @@ const Nav = () => {
               </svg>
               <span>Chat</span>
             </NavLink>
-            <span className="text-gray-300 text-sm hidden sm:inline">| Welcome, {authUser.username}</span>
+            <span className="text-gray-300 text-sm hidden sm:inline">| Welcome, {authUser.user.username}</span>
             <button
               className="bg-red-600 text-white rounded-md p-2 px-5 hover:bg-red-500 transition font-bold text-sm"
               onClick={handleLogout}
@@ -83,5 +83,6 @@ const Nav = () => {
              
   );
 };
+
 
 export default Nav;
