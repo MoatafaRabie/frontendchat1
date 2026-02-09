@@ -9,8 +9,9 @@ const Login = () => {
     const [password, setPassword] = useState("");
     const [emailError, setEmailError] = useState("");
     const [passwordError, setPasswordError] = useState("");
-    const [loading, setLoading] = useState(false);
-    
+    const [loading, setLoading] = useState(false)
+     const [submit, setsubmit] = useState("");
+
     const navigate = useNavigate();
     const { setAuthUser } = useAuth();
 
@@ -63,6 +64,7 @@ const Login = () => {
         } catch (error) {
             const errMsg = error.response?.data?.message || "Email or Password is incorrect";
             toast.error(errMsg);
+            setsubmit("Password or Email is incorrect");
         } finally {
             setLoading(false);
         }
@@ -106,7 +108,9 @@ const Login = () => {
                         className="w-full py-2 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded-lg transition duration-200 disabled:bg-gray-600"
                     >
                         {loading ? "Logging in..." : "Login"}
-                    </button>
+                    </button
+                      <span className='text-red-600 m-20'>{submit}</span>
+
                 </form>
 
                 <p className="mt-4 text-center text-gray-400">
@@ -117,5 +121,6 @@ const Login = () => {
         </div>
     );
 };
+
 
 export default Login;
