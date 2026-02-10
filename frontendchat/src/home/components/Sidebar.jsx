@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { FaSearch } from 'react-icons/fa';
 import { BiLogOut } from "react-icons/bi";
 import axios from 'axios';
-import useConversation from '../../Zustans/useConversation'; // تأكد من المسار عندك
+import useConversation from '../../Zustans/useConversation'; 
 import { useSocketContext } from '../../context/SocketContext';
 import { useAuth } from '../../context/AuthContext';
 import { NavLink } from 'react-router';
@@ -17,20 +17,20 @@ const Sidebar = () => {
     const { setAuthUser } = useAuth();
 
     useEffect(() => {
-    const token = setAuthUser?.token;
-
+        const token = setAuthUser?.token;
         const getUsers = async () => {
             setLoading(true);
             try {
-                const res = await axios.get("https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app/api/login/search", { 
+                const res = await axios.get("http://localhost:3001/api/login/search", { 
                     params: { search: "" }, 
                     withCredentials: true ,
-                    headers: {
+                headers: {
                 Authorization: `Bearer ${token}`
 
             }
-                });
-                console.log("Users received:", res.data);
+
+        });
+                                console.log("Users received:", res.data);
 
                 setAllUsers(res.data);
             } catch (error) {
@@ -113,6 +113,4 @@ const Sidebar = () => {
     );
 };
 
-
 export default Sidebar;
-
