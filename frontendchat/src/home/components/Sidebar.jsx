@@ -22,7 +22,7 @@ const Sidebar = () => {
             try {
                 const res = await axios.get("https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app/api/login/search", { 
                     params: { search: "" }, 
-                    withCredentials: true و
+                    withCredentials: true ,
 
         });
 
@@ -108,5 +108,6 @@ const Sidebar = () => {
 };
 
 export default Sidebar;
+
 
 
