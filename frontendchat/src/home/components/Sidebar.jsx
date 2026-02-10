@@ -17,20 +17,14 @@ const Sidebar = () => {
     const { setAuthUser } = useAuth();
 
     useEffect(() => {
-        const token = setAuthUser?.token;
         const getUsers = async () => {
             setLoading(true);
             try {
                 const res = await axios.get("https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app/api/login/search", { 
                     params: { search: "" }, 
-                    withCredentials: true ,
-                headers: {
-                Authorization: `Bearer ${token}`
-
-            }
+                    withCredentials: true و
 
         });
-                                console.log("Users received:", res.data);
 
                 setAllUsers(res.data);
             } catch (error) {
@@ -114,4 +108,5 @@ const Sidebar = () => {
 };
 
 export default Sidebar;
+
 
