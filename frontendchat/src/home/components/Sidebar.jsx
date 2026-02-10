@@ -14,15 +14,19 @@ const Sidebar = () => {
     
     const { selectedConversation, setSelectedConversation } = useConversation();
     const { onlineUsers } = useSocketContext();
-    const { setAuthUser } = useAuth();
-
+    const { authUser, setAuthUser } = useAuth();
+    
     useEffect(() => {
         const getUsers = async () => {
+            const token = authUser?.token;
             setLoading(true);
             try {
                 const res = await axios.get("https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app/api/login/search", { 
                     params: { search: "" }, 
                     withCredentials: true ,
+                    headers: {
+                    Authorization: `Bearer ${token}` 
+                }
 
         });
 
@@ -33,8 +37,8 @@ const Sidebar = () => {
                 setLoading(false);
             }
         };
-        getUsers();
-    }, []);
+        if(authUser) getUsers();
+}, [authUser]);
 
     const filteredUsers = allUsers.filter(user => 
         user.username.toLowerCase().includes(search.toLowerCase())
