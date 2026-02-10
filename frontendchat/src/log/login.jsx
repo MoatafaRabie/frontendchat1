@@ -110,7 +110,7 @@ const Login = () => {
                     >
                         {loading ? "Logging in..." : "Login"}
                     </button>
-                     <span className='text-red-600 m-20'>{submit}</span>
+                     <span className='text-red-600 text-sm m-20'>{submit}</span>
                 </form>
 
                 <p className="mt-4 text-center text-gray-400">
@@ -123,4 +123,5 @@ const Login = () => {
 };
 
 export default Login;
+
 
