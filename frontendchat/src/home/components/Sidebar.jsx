@@ -15,6 +15,7 @@ const Sidebar = () => {
     const { selectedConversation, setSelectedConversation } = useConversation();
     const { onlineUsers } = useSocketContext();
     const { setAuthUser } = useAuth();
+    const token = setAuthUser?.token;
 
     useEffect(() => {
         const getUsers = async () => {
@@ -23,7 +24,13 @@ const Sidebar = () => {
                 const res = await axios.get("https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app/api/login/search", { 
                     params: { search: "" }, 
                     withCredentials: true ,
+                    headers: {
+                Authorization: `Bearer ${token}`
+
+            }
                 });
+                console.log("Users received:", res.data);
+
                 setAllUsers(res.data);
             } catch (error) {
                 console.error("Error fetching users:", error);
@@ -104,5 +111,6 @@ const Sidebar = () => {
         </div>
     );
 };
+
 
 export default Sidebar;
