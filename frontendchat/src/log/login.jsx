@@ -65,7 +65,7 @@ const Login = () => {
         } catch (error) {
             const errMsg = error.response?.data?.message || "Email or Password is incorrect";
             toast.error(errMsg);
-            setsubmit("Password or Email is incorrect");
+            setsubmit("Invalid Password or Email");
         } finally {
             setLoading(false);
         }
@@ -123,5 +123,6 @@ const Login = () => {
 };
 
 export default Login;
+
 
 
