@@ -15,9 +15,10 @@ const Sidebar = () => {
     const { selectedConversation, setSelectedConversation } = useConversation();
     const { onlineUsers } = useSocketContext();
     const { setAuthUser } = useAuth();
-    const token = setAuthUser?.token;
 
     useEffect(() => {
+    const token = setAuthUser?.token;
+
         const getUsers = async () => {
             setLoading(true);
             try {
@@ -114,3 +115,4 @@ const Sidebar = () => {
 
 
 export default Sidebar;
+
