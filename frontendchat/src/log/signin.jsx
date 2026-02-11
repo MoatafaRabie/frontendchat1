@@ -59,7 +59,7 @@ const [role, setRole] = useState("normal");
     }
 
     try {
-      const response = await fetch("https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app/api/signup", {
+      const response = await fetch("https://backendforchat.vercel.app/api/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, email, password ,role }),
@@ -169,3 +169,4 @@ const [role, setRole] = useState("normal");
 };
 
 export default Signin;
+
