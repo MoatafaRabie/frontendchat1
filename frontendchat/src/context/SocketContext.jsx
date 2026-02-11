@@ -25,7 +25,10 @@ export const SocketContextProvider = ({ children }) => {
                 setOnlineUsers(users);
             });
 
-            return () => newSocket.close();
+            return () => {
+              newSocket.off("getOnlineUsers");
+              newSocket.disconnect();
+            };
         } else {
             if (socket) {
                 socket.close();
@@ -42,3 +45,4 @@ export const SocketContextProvider = ({ children }) => {
     );
 
 };
+
