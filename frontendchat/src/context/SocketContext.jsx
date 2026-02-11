@@ -13,7 +13,7 @@ export const SocketContextProvider = ({ children }) => {
 
     useEffect(() => {
         if (authUser) {
-            const newSocket = io("https://backendforchat.vercel.app", {
+            const newSocket = io("https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app", {
                 query: { userId: authUser._id },
                 transports: ["polling", "websocket"],
                 withCredentials: true,
@@ -45,5 +45,6 @@ export const SocketContextProvider = ({ children }) => {
     );
 
 };
+
 
 
