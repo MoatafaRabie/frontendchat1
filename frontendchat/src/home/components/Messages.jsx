@@ -15,7 +15,7 @@ console.log(" msg is sent ?", messages.length);
         const getMessages = async () => {
             if (!selectedConversation?._id) return;
             try {
-                const res = await axios.get(`https://backendforchat.vercel.app/api/message/${selectedConversation._id}`, {
+                const res = await axios.get(`https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app/api/message/${selectedConversation._id}`, {
                     withCredentials: true
                 });
                 setMessages(res.data);
@@ -68,3 +68,4 @@ console.log(" msg is sent ?", messages.length);
 
 
 export default Messages;
+
