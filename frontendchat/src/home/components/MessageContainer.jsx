@@ -10,8 +10,6 @@ const MessageContainer = () => {
 const { authUser } = useAuth();
     const { selectedConversation, setSelectedConversation } = useConversation();
 
-    useListenMessages();
-
     useEffect(() => {
         return () => setSelectedConversation(null);
     }, [setSelectedConversation]);
@@ -41,5 +39,6 @@ const { authUser } = useAuth();
         </div>
     );
 };
+
 
 export default MessageContainer;
