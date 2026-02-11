@@ -16,7 +16,7 @@ const MessageInput = () => {
         setLoading(true);
         try {
             const res = await axios.post(
-                `https://backendforchat.vercel.app/api/message/send/${selectedConversation._id}`, 
+                `https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app/api/message/send/${selectedConversation._id}`, 
                 { messages: messageText }, 
                 { withCredentials: true }
             );
@@ -63,4 +63,5 @@ const MessageInput = () => {
 
 
 export default MessageInput;
+
 
