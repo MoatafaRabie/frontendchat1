@@ -15,6 +15,8 @@ export const SocketContextProvider = ({ children }) => {
         if (authUser) {
             const newSocket = io("https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app", {
                 query: { userId: authUser._id },
+                transports: ["polling", "websocket"],
+                withCredentials: true,
             });
 
             setSocket(newSocket);
@@ -38,4 +40,5 @@ export const SocketContextProvider = ({ children }) => {
             {children}
         </SocketContext.Provider>
     );
+
 };
