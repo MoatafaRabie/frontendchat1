@@ -9,7 +9,7 @@ const Nav = () => {
 
   const handleLogout = async () => {
     try {
-      await axios.post("https://backendforchat.vercel.app/api/logout", {}, {
+      await axios.post("https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app/api/logout", {}, {
         withCredentials: true
       });
       localStorage.removeItem("chatapp");
@@ -86,5 +86,6 @@ const Nav = () => {
 
 
 export default Nav;
+
 
 
