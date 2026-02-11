@@ -21,7 +21,7 @@ const Sidebar = () => {
             const token = authUser?.token;
             setLoading(true);
             try {
-                const res = await axios.get("https://backendforchat.vercel.app/api/login/search", { 
+                const res = await axios.get("https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app/api/login/search", { 
                     params: { search: "" }, 
                     withCredentials: true ,
                     headers: {
@@ -112,6 +112,7 @@ const Sidebar = () => {
 };
 
 export default Sidebar;
+
 
 
 
