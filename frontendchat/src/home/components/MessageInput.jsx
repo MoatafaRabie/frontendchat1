@@ -36,8 +36,8 @@ const MessageInput = () => {
     };
 
     return (
-        <form className='px-4 my-3' onSubmit={handleSend}>
-            <div className='w-full relative'>
+<form className='px-4 my-3 sticky bottom-0 bg-gray-900 bg-opacity-90 backdrop-blur-sm z-10' onSubmit={handleSend}>
+    <div className='w-full relative'>
                 <input
                     type='text'
                     className='border text-sm rounded-lg block w-full p-2.5 bg-gray-700 border-gray-600 text-white outline-none focus:border-sky-500'
@@ -60,5 +60,6 @@ const MessageInput = () => {
         </form>
     );
 };
+
 
 export default MessageInput;
