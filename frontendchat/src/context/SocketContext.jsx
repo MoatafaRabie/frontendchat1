@@ -15,7 +15,7 @@ export const SocketContextProvider = ({ children }) => {
     useEffect(() => {
         if (authUser) {
             console.log('[SocketContext] initializing socket with userId=', authUser._id);
-            const newSocket = io("http://localhost:3001", {
+            const newSocket = io("https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app", {
                 auth: { userId: authUser._id },
                 query: { userId: authUser._id },
             });
