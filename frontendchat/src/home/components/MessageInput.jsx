@@ -17,7 +17,7 @@ const MessageInput = () => {
         setLoading(true);
         try {
             const res = await axios.post(
-                `http://localhost:3001/api/message/send/${selectedConversation._id}`, 
+                `https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app/api/message/send/${selectedConversation._id}`, 
                 { messages: messageText }, 
                 { withCredentials: true }
             );
