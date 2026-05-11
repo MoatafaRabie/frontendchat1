@@ -8,6 +8,7 @@ const MessageInput = () => {
     const [messageText, setMessageText] = useState("");
     const [loading, setLoading] = useState(false);
     const { setMessages, selectedConversation } = useConversation();
+    const { socket } = useSocketContext();
 
     const handleSend = async (e) => {
         e.preventDefault();
@@ -16,15 +17,29 @@ const MessageInput = () => {
         setLoading(true);
         try {
             const res = await axios.post(
-                `https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app/api/message/send/${selectedConversation._id}`, 
+                `http://localhost:3001/api/message/send/${selectedConversation._id}`, 
                 { messages: messageText }, 
                 { withCredentials: true }
             );
 
-            const data = res.data; 
+            const data = res.data;
 
-            setMessages((prevMessages) => [...prevMessages, data]); 
-            
+            // Do NOT optimistically add the message locally to avoid duplicates.
+            // The server will broadcast the saved message to all room members
+            // (including the sender) via socket or SSE, and our listeners will
+            // append it once received.
+
+            // ensure we're joined to the conversation room so broadcasts reach us
+            try {
+                if (socket && typeof socket.emit === "function" && data.conversationId) {
+                    socket.emit('join', data.conversationId);
+                    socket.emit('joinRoom', data.conversationId);
+                    console.log('Joined conversation room (after send):', data.conversationId);
+                }
+            } catch (err) {
+                console.warn("Socket join after send failed:", err);
+            }
+
             setMessageText(""); 
             console.log(" msg is sent and added ");
         } catch (error) {
@@ -36,8 +51,7 @@ const MessageInput = () => {
     };
 
     return (
-<form className='px-4 my-3 sticky bottom-0 bg-gray-900 bg-opacity-90 backdrop-blur-sm z-10' onSubmit={handleSend}>
-    <div className='w-full relative'>
+<form className='px-4 my-3 sticky bottom-0 bg-gray-900 bg-opacity-90 backdrop-blur-sm z-10' onSubmit={handleSend}>            <div className='w-full relative'>
                 <input
                     type='text'
                     className='border text-sm rounded-lg block w-full p-2.5 bg-gray-700 border-gray-600 text-white outline-none focus:border-sky-500'
@@ -61,7 +75,4 @@ const MessageInput = () => {
     );
 };
 
-
 export default MessageInput;
-
-
