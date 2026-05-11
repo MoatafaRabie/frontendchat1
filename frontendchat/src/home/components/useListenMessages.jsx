@@ -7,15 +7,41 @@ const useListenMessages = () => {
     const { setMessages } = useConversation();
 
     useEffect(() => {
-        if (!socket) return;
+        let mounted = true;
+        const handler = (newMessage) => {
+            if (!mounted) return;
+            console.log("Socket signal received:", newMessage);
+            setMessages((prev) => {
+                if (!newMessage || !newMessage._id) return prev;
+                const exists = prev.some((m) => String(m._id) === String(newMessage._id));
+                if (exists) return prev;
+                return [...prev, newMessage];
+            });
+        };
 
-        socket.on("newmessages", (newMessage) => {
-            console.log("🔥 Socket signal received:", newMessage);
-            
-            setMessages((prev) => [...prev, newMessage]);
-        });
+        if (socket) {
+            socket.on("newmessages", handler);
+        }
 
-        return () => socket.off("newmessages");
+        // SSE / window fallback
+        const windowHandler = (e) => {
+            if (!mounted) return;
+            const newMessage = e.detail;
+            console.log('Window newmessages event received:', newMessage);
+            setMessages((prev) => {
+                if (!newMessage || !newMessage._id) return prev;
+                const exists = prev.some((m) => String(m._id) === String(newMessage._id));
+                if (exists) return prev;
+                return [...prev, newMessage];
+            });
+        };
+        window.addEventListener('newmessages', windowHandler);
+
+        return () => {
+            mounted = false;
+            if (socket) socket.off("newmessages", handler);
+            window.removeEventListener('newmessages', windowHandler);
+        };
     }, [socket, setMessages]); 
 };
 
