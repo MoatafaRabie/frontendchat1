@@ -50,7 +50,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         ice: '/api/signal/ice',
         end: '/api/signal/end'
       };
-      const url = `http://localhost:3001${endpointMap[type]}`;
+      const url = `https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app${endpointMap[type]}`;
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
