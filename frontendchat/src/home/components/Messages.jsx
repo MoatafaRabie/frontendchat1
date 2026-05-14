@@ -78,7 +78,7 @@ console.log(" msg is sent ?", messages.length);
             const headers = {};
             if (authUser?.token) headers['Authorization'] = `Bearer ${authUser.token}`;
 
-            const res = await fetch(`http://localhost:3001/api/message/video/${messageId}`, {
+            const res = await fetch(`https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app/api/message/video/${messageId}`, {
                 method: 'GET',
                 headers,
                 credentials: 'include'
