@@ -47,7 +47,10 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     // HTTP fallback
     try {
       const endpointMap = { call: '/api/signal/call', answer: '/api/signal/answer', ice: '/api/signal/ice', end: '/api/signal/end' };
-      const url = `https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app${endpointMap[type]}`;
+      const SIGNALING_URL = process.env.REACT_APP_SIGNALING_URL || (typeof window !== 'undefined' && window.location && window.location.origin) || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+      const base = SIGNALING_URL.replace(/\/$/, '');
+      const url = `${base}${endpointMap[type]}`;
+      console.warn('Using HTTP fallback to', url);
       await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(payload) });
       return true;
     } catch (err) {
@@ -78,7 +81,19 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
 
       pcRef.current.ontrack = (e) => {
         console.log('[pc] ontrack, streams:', e.streams);
-        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
+        try {
+          const stream = e.streams && e.streams[0];
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = stream;
+            // attach debug event handlers to help diagnose black-screen issues on mobile
+            remoteVideoRef.current.onloadeddata = () => console.log('[video] remote loadeddata', { readyState: remoteVideoRef.current.readyState, paused: remoteVideoRef.current.paused });
+            remoteVideoRef.current.onplaying = () => console.log('[video] remote playing');
+            remoteVideoRef.current.onpause = () => console.log('[video] remote paused');
+            remoteVideoRef.current.onerror = (ev) => console.error('[video] remote error', ev);
+            // log tracks
+            try { console.log('[video] remote tracks', stream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled }))); } catch (err) {}
+          }
+        } catch (err) { console.error('ontrack handling failed', err); }
       };
 
       stream.getTracks().forEach((t) => pcRef.current.addTrack(t, stream));
@@ -125,7 +140,16 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
 
       pcRef.current.ontrack = (e) => {
         console.log('[pc] ontrack (receiver), streams:', e.streams);
-        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
+        try {
+          const stream = e.streams && e.streams[0];
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = stream;
+            remoteVideoRef.current.onloadeddata = () => console.log('[video] remote loadeddata', { readyState: remoteVideoRef.current.readyState });
+            remoteVideoRef.current.onplaying = () => console.log('[video] remote playing');
+            remoteVideoRef.current.onerror = (ev) => console.error('[video] remote error', ev);
+            try { console.log('[video] remote tracks', stream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled }))); } catch (err) {}
+          }
+        } catch (err) { console.error('ontrack (receiver) handling failed', err); }
       };
 
       await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
@@ -240,10 +264,10 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
           {(callState === 'calling' || (callState === 'in-call' && localStreamRef.current)) ? (
             <>
               <video ref={localVideoRef} autoPlay muted playsInline className="w-1/2 rounded bg-black" />
-              <video ref={remoteVideoRef} autoPlay playsInline muted className="w-1/2 rounded bg-black" />
+              <video ref={remoteVideoRef} autoPlay playsInline className="w-1/2 rounded bg-black" />
             </>
           ) : (
-            <video ref={remoteVideoRef} autoPlay playsInline muted className="w-full rounded bg-black" />
+            <video ref={remoteVideoRef} autoPlay playsInline className="w-full rounded bg-black" />
           )}
         </div>
 
