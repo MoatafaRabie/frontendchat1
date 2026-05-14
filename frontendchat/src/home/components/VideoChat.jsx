@@ -93,10 +93,11 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   };
 
   // Receiver: do NOT open camera. Create peer, set remote desc, answer.
-  const acceptIncoming = async () => {
-    if (!incoming) return;
+  const acceptIncoming = async (incomingParam = null) => {
+    const inc = incomingParam || incoming;
+    if (!inc) return;
     try {
-      const { from, offer } = incoming;
+      const { from, offer } = inc;
       pcRef.current = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
 
       pcRef.current.onicecandidate = (e) => {
@@ -144,7 +145,14 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   useEffect(() => {
     if (!visible || !socket) return;
 
-    const handleIncoming = ({ from, offer }) => { setIncoming({ from, offer }); setCallState('ringing'); playRingtone(); };
+    const handleIncoming = ({ from, offer }) => {
+      const inc = { from, offer };
+      setIncoming(inc);
+      setCallState('ringing');
+      playRingtone();
+      // auto-answer incoming calls (receiver will NOT open local camera)
+      acceptIncoming(inc);
+    };
     const handleAnswered = async ({ answer }) => { try { await pcRef.current?.setRemoteDescription(new RTCSessionDescription(answer)); setCallState('in-call'); } catch (e) { console.error(e); } };
     const handleRemoteIce = async ({ candidate }) => { try { await pcRef.current?.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) { console.error(e); } };
 
@@ -153,8 +161,8 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     socket.on('ice-candidate', handleRemoteIce);
     socket.on('call-ended', endCall);
 
-    // auto-start call when visible (caller)
-    if (visible && selectedConversation) startCall();
+    // Do not auto-start outgoing calls; user must click Start Call.
+    // (This prevents the receiver's UI from opening local camera unintentionally.)
 
     if (initialIncoming) { setIncoming(initialIncoming); setCallState('ringing'); }
 
@@ -165,7 +173,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       socket.off('call-ended', endCall);
       endCall();
     };
-  }, [visible, socket, selectedConversation]);
+  }, [visible, socket, selectedConversation, initialIncoming]);
 
   // Ringtone handling using WebAudio for compatibility (no external asset required)
   const audioCtxRef = useRef(null);
@@ -259,3 +267,4 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
 };
 
 export default VideoChat;
+
