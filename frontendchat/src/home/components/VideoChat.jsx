@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-// استخدام المسارات الصحيحة بناءً على هيكل مشروعك
-import { useSocketContext } from "../context/SocketContext";
-import useConversation from "../Zustans/useConversation";
+import { useSocketContext } from "../../context/SocketContext";
+import useConversation from "../../Zustans/useConversation";
 import { useAuth } from "../../context/AuthContext";
 
 // One-way WebRTC: caller sends video (opens camera), receiver only receives and views.
@@ -11,38 +10,27 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const debugCanvasRef = useRef(null);
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
-  
   const { socket } = useSocketContext();
   const { selectedConversation } = useConversation();
   const [callState, setCallState] = useState("idle"); // idle, calling, ringing, in-call
   const [incoming, setIncoming] = useState(null); // { from, offer }
 
   const { authUser } = useAuth();
-
   const getIceServers = () => {
-    const turnUrl = process.env.REACT_APP_TURN_URL;
-    const turnUser = process.env.REACT_APP_TURN_USERNAME;
-    const turnPass = process.env.REACT_APP_TURN_PASSWORD;
-    
-    // استخدام سيرفرات STUN إضافية لضمان استقرار أكبر
-    const servers = [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' }
-    ];
-    
-    if (turnUrl && turnUser && turnPass) {
-      servers.push({ 
-        urls: turnUrl, 
-        username: turnUser, 
-        credential: turnPass 
-      });
-      console.log('[VideoChat] using TURN server:', turnUrl);
-    } else {
-      console.warn('[VideoChat] No TURN server credentials found. Video might fail on different networks.');
+    // The build patch script will replace the placeholders in the built bundle
+    // with actual TURN values if provided in CI. Keep placeholders in-source
+    // so the repo remains generic and the build artifact is patched at deploy.
+    const turnUrl = process.env.REACT_APP_TURN_URL || 'REACT_APP_TURN_URL_PLACEHOLDER';
+    const turnUser = process.env.REACT_APP_TURN_USERNAME || 'REACT_APP_TURN_USERNAME_PLACEHOLDER';
+    const turnPass = process.env.REACT_APP_TURN_PASSWORD || 'REACT_APP_TURN_PASSWORD_PLACEHOLDER';
+    const servers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    if (turnUrl && turnUrl !== 'REACT_APP_TURN_URL_PLACEHOLDER') {
+      servers.push({ urls: turnUrl, username: turnUser !== 'REACT_APP_TURN_USERNAME_PLACEHOLDER' ? turnUser : undefined, credential: turnPass !== 'REACT_APP_TURN_PASSWORD_PLACEHOLDER' ? turnPass : undefined });
+      console.log('[VideoChat] using TURN server', turnUrl);
     }
     return servers;
   };
-
+  // video-only one-way call: caller sends video, receiver only receives
   const constraints = { video: true, audio: false };
 
   const sendSignal = async (type, body = {}) => {
@@ -77,6 +65,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       const SIGNALING_URL = process.env.REACT_APP_SIGNALING_URL || (typeof window !== 'undefined' && window.location && window.location.origin) || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
       const base = SIGNALING_URL.replace(/\/$/, '');
       const url = `${base}${endpointMap[type]}`;
+      console.warn('Using HTTP fallback to', url);
       await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(payload) });
       return true;
     } catch (err) {
@@ -87,29 +76,42 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
 
   const otherId = () => selectedConversation?._id;
 
+  // Caller: start local camera and send offer
   const startCall = async () => {
     const to = otherId();
     if (!to) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
+      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
 
       pcRef.current = new RTCPeerConnection({ iceServers: getIceServers() });
 
       pcRef.current.onicecandidate = (e) => {
         if (e.candidate) {
+          console.log('[pc] local ice candidate ->', e.candidate);
           sendSignal('ice', { to, candidate: e.candidate });
         }
       };
 
       pcRef.current.ontrack = (e) => {
-        const stream = e.streams && e.streams[0];
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = stream;
-        }
+        console.log('[pc] ontrack, streams:', e.streams);
+        try {
+          const stream = e.streams && e.streams[0];
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = stream;
+            // attach debug event handlers to help diagnose black-screen issues on mobile
+            remoteVideoRef.current.onloadeddata = () => console.log('[video] remote loadeddata', { readyState: remoteVideoRef.current.readyState, paused: remoteVideoRef.current.paused });
+            remoteVideoRef.current.onplaying = () => {
+              console.log('[video] remote playing');
+              snapshotRemoteFrame();
+            };
+            remoteVideoRef.current.onpause = () => console.log('[video] remote paused');
+            remoteVideoRef.current.onerror = (ev) => console.error('[video] remote error', ev);
+            // log tracks
+            try { console.log('[video] remote tracks', stream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled }))); } catch (err) {}
+          }
+        } catch (err) { console.error('ontrack handling failed', err); }
       };
 
       stream.getTracks().forEach((t) => pcRef.current.addTrack(t, stream));
@@ -123,38 +125,56 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     }
   };
 
+  // Receiver: do NOT open camera. Create peer, set remote desc, answer.
   const acceptIncoming = async (incomingParam = null) => {
     let inc = incomingParam || incoming;
-    if (inc && (inc.nativeEvent || inc.type === 'click' || inc._reactName)) inc = incoming;
+    // If this was bound directly to an onClick, React may pass the click event as first arg.
+    // Detect and ignore synthetic/DOM events and fall back to the stored `incoming` payload.
+    if (inc && (inc.nativeEvent || inc.type === 'click' || inc._reactName)) {
+      inc = incoming;
+    }
     if (!inc) return;
-    
     try {
       const { from } = inc;
+      // normalize offer payload (some signaling paths wrap it differently)
       let offer = inc.offer || inc;
       if (offer && offer.offer) offer = offer.offer;
-      if (!offer || !offer.sdp) return;
-      if (!offer.type) offer = { ...offer, type: 'offer' };
-
+      if (!offer || !offer.sdp) {
+        console.error('acceptIncoming: missing offer.sdp, aborting', offer);
+        return;
+      }
+      if (!offer.type) {
+        console.warn('acceptIncoming: offer.type missing, defaulting to "offer"');
+        offer = { ...offer, type: 'offer' };
+      }
       pcRef.current = new RTCPeerConnection({ iceServers: getIceServers() });
 
       pcRef.current.onicecandidate = (e) => {
         if (e.candidate) {
+          console.log('[pc] remote-side local ice ->', e.candidate);
           sendSignal('ice', { to: from, candidate: e.candidate });
         }
       };
 
       pcRef.current.ontrack = (e) => {
-        const stream = e.streams && e.streams[0];
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = stream;
-        }
+        console.log('[pc] ontrack (receiver), streams:', e.streams);
+        try {
+          const stream = e.streams && e.streams[0];
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = stream;
+            remoteVideoRef.current.onloadeddata = () => console.log('[video] remote loadeddata', { readyState: remoteVideoRef.current.readyState });
+            remoteVideoRef.current.onplaying = () => { console.log('[video] remote playing'); snapshotRemoteFrame(); };
+            remoteVideoRef.current.onerror = (ev) => console.error('[video] remote error', ev);
+            try { console.log('[video] remote tracks', stream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled }))); } catch (err) {}
+          }
+        } catch (err) { console.error('ontrack (receiver) handling failed', err); }
       };
 
       await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pcRef.current.createAnswer();
       await pcRef.current.setLocalDescription(answer);
       await sendSignal('answer', { to: from, answer: pcRef.current.localDescription });
-      
+      // stop ringtone when answering
       stopRingtone();
       setIncoming(null);
       setCallState('in-call');
@@ -170,10 +190,10 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     try { if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null; } catch (e) {}
     pcRef.current = null;
     localStreamRef.current = null;
-    
+    // notify the other side
     const to = selectedConversation?._id || (incoming && incoming.from);
     if (to) sendSignal('end', { to });
-    
+    // stop ringtone if any
     stopRingtone();
     setIncoming(null);
     setCallState('idle');
@@ -188,6 +208,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       setIncoming(inc);
       setCallState('ringing');
       playRingtone();
+      // auto-answer incoming calls (receiver will NOT open local camera)
       acceptIncoming(inc);
     };
     const handleAnswered = async ({ answer }) => { try { await pcRef.current?.setRemoteDescription(new RTCSessionDescription(answer)); setCallState('in-call'); } catch (e) { console.error(e); } };
@@ -197,6 +218,9 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     socket.on('call-answered', handleAnswered);
     socket.on('ice-candidate', handleRemoteIce);
     socket.on('call-ended', endCall);
+
+    // Do not auto-start outgoing calls; user must click Start Call.
+    // (This prevents the receiver's UI from opening local camera unintentionally.)
 
     if (initialIncoming) { setIncoming(initialIncoming); setCallState('ringing'); }
 
@@ -209,11 +233,67 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     };
   }, [visible, socket, selectedConversation, initialIncoming]);
 
+  // Ringtone handling using WebAudio for compatibility (no external asset required)
   const audioCtxRef = useRef(null);
   const oscillatorRef = useRef(null);
 
-  const playRingtone = () => { /* ... existing ringtone logic ... */ };
-  const stopRingtone = () => { /* ... existing stop logic ... */ };
+  const playRingtone = () => {
+    try {
+      if (audioCtxRef.current) return; // already playing
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      audioCtxRef.current = ctx;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(440, ctx.currentTime);
+      gain.gain.setValueAtTime(0.05, ctx.currentTime);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      oscillatorRef.current = { osc, gain };
+    } catch (e) {
+      console.warn('Ringtone failed', e);
+    }
+  };
+
+  const stopRingtone = () => {
+    try {
+      if (oscillatorRef.current) {
+        oscillatorRef.current.osc.stop();
+        oscillatorRef.current.osc.disconnect();
+        oscillatorRef.current.gain.disconnect();
+        oscillatorRef.current = null;
+      }
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close();
+        audioCtxRef.current = null;
+      }
+    } catch (e) {}
+  };
+
+  const snapshotRemoteFrame = () => {
+    try {
+      const v = remoteVideoRef.current;
+      const c = debugCanvasRef.current;
+      if (!v || !c) return;
+      const w = v.videoWidth || 320;
+      const h = v.videoHeight || 240;
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(v, 0, 0, w, h);
+      const px = Math.floor(w / 2);
+      const py = Math.floor(h / 2);
+      const data = ctx.getImageData(px, py, 1, 1).data;
+      const avg = (data[0] + data[1] + data[2]) / 3;
+      console.log('[video-snapshot] size', w, h, 'center RGBA', data, 'avg', avg);
+      if (avg < 8) console.warn('[video-snapshot] frame appears nearly black (avg<8)');
+    } catch (e) {
+      console.error('snapshotRemoteFrame failed', e);
+    }
+  };
 
   if (!visible) return null;
 
@@ -244,23 +324,23 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
           {callState === 'calling' && (
             <div className="flex justify-between items-center">
               <span className="text-gray-200">Calling...</span>
-              <button onClick={endCall} className="px-3 py-1 bg-red-600 rounded">Cancel</button>
+              <button onClick={() => { endCall(); }} className="px-3 py-1 bg-red-600 rounded">Cancel</button>
             </div>
           )}
 
           {callState === 'ringing' && incoming && (
             <div className="flex justify-between items-center">
-              <span className="text-gray-200">Incoming call...</span>
+              <span className="text-gray-200">Incoming call from {incoming.from}</span>
               <div className="flex gap-2">
                 <button onClick={() => acceptIncoming()} className="px-3 py-1 bg-green-600 rounded">Accept</button>
-                <button onClick={endCall} className="px-3 py-1 bg-red-600 rounded">Decline</button>
+                <button onClick={() => { endCall(); }} className="px-3 py-1 bg-red-600 rounded">Decline</button>
               </div>
             </div>
           )}
 
           {callState === 'in-call' && (
             <div className="flex justify-end">
-              <button onClick={endCall} className="px-3 py-1 bg-red-600 rounded">End</button>
+              <button onClick={() => { endCall(); }} className="px-3 py-1 bg-red-600 rounded">End</button>
             </div>
           )}
         </div>
