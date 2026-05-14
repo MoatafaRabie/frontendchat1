@@ -3,425 +3,341 @@ import { useSocketContext } from "../../context/SocketContext";
 import useConversation from "../../Zustans/useConversation";
 import { useAuth } from "../../context/AuthContext";
 
+// One-way WebRTC: caller sends video (opens camera), receiver only receives and views.
 const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
-
+  const debugCanvasRef = useRef(null);
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
-
   const { socket } = useSocketContext();
   const { selectedConversation } = useConversation();
+  const [callState, setCallState] = useState("idle"); // idle, calling, ringing, in-call
+  const [incoming, setIncoming] = useState(null); // { from, offer }
+
   const { authUser } = useAuth();
-
-  const [callState, setCallState] = useState("idle");
-  const [incoming, setIncoming] = useState(null);
-
-  const constraints = {
-    video: true,
-    audio: false,
+  const getIceServers = () => {
+    const turnUrl = process.env.REACT_APP_TURN_URL;
+    const turnUser = process.env.REACT_APP_TURN_USERNAME;
+    const turnPass = process.env.REACT_APP_TURN_PASSWORD;
+    const servers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    if (turnUrl) {
+      servers.push({ urls: turnUrl, username: turnUser || undefined, credential: turnPass || undefined });
+      console.log('[VideoChat] using TURN server', turnUrl);
+    }
+    return servers;
   };
-
-  const createPeerConnection = (targetId) => {
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        {
-          urls: "stun:stun.l.google.com:19302",
-        },
-
-        // TURN SERVERS
-        {
-          urls: "turn:openrelay.metered.ca:80",
-          username: "openrelayproject",
-          credential: "openrelayproject",
-        },
-        {
-          urls: "turn:openrelay.metered.ca:443",
-          username: "openrelayproject",
-          credential: "openrelayproject",
-        },
-      ],
-    });
-
-    // ICE STATE
-    pc.oniceconnectionstatechange = () => {
-      console.log("ICE STATE:", pc.iceConnectionState);
-    };
-
-    // ICE CANDIDATES
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log("Sending ICE Candidate");
-
-        sendSignal("ice", {
-          to: targetId,
-          candidate: event.candidate,
-        });
-      }
-    };
-
-    // RECEIVE REMOTE STREAM
-    pc.ontrack = (event) => {
-      console.log("Remote Track Received");
-
-      const remoteStream = event.streams[0];
-
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = remoteStream;
-
-        remoteVideoRef.current
-          .play()
-          .catch((err) => console.log("Autoplay error:", err));
-      }
-    };
-
-    return pc;
-  };
+  // video-only one-way call: caller sends video, receiver only receives
+  const constraints = { video: true, audio: false };
 
   const sendSignal = async (type, body = {}) => {
-    const fromId =
-      body?.from || authUser?._id || socket?.id || null;
+    const fromId = body?.from || authUser?._id || (socket && socket.id) || null;
+    const payload = { ...body, from: fromId };
+    try {
+      if (socket && socket.connected) {
+        switch (type) {
+          case 'call':
+            socket.emit('call-user', { to: payload.to, offer: payload.offer, from: payload.from });
+            return true;
+          case 'answer':
+            socket.emit('answer-call', { to: payload.to, answer: payload.answer, from: payload.from });
+            return true;
+          case 'ice':
+            socket.emit('ice-candidate', { to: payload.to, candidate: payload.candidate, from: payload.from });
+            return true;
+          case 'end':
+            socket.emit('end-call', { to: payload.to, from: payload.from });
+            return true;
+          default:
+            break;
+        }
+      }
+    } catch (e) {
+      console.warn('socket signaling failed, falling back to HTTP', e);
+    }
 
-    const payload = {
-      ...body,
-      from: fromId,
-    };
-
-    if (!socket) return;
-
-    switch (type) {
-      case "call":
-        socket.emit("call-user", {
-          to: payload.to,
-          offer: payload.offer,
-          from: payload.from,
-        });
-        break;
-
-      case "answer":
-        socket.emit("answer-call", {
-          to: payload.to,
-          answer: payload.answer,
-          from: payload.from,
-        });
-        break;
-
-      case "ice":
-        socket.emit("ice-candidate", {
-          to: payload.to,
-          candidate: payload.candidate,
-          from: payload.from,
-        });
-        break;
-
-      case "end":
-        socket.emit("end-call", {
-          to: payload.to,
-          from: payload.from,
-        });
-        break;
-
-      default:
-        break;
+    // HTTP fallback
+    try {
+      const endpointMap = { call: '/api/signal/call', answer: '/api/signal/answer', ice: '/api/signal/ice', end: '/api/signal/end' };
+      const SIGNALING_URL = process.env.REACT_APP_SIGNALING_URL || (typeof window !== 'undefined' && window.location && window.location.origin) || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+      const base = SIGNALING_URL.replace(/\/$/, '');
+      const url = `${base}${endpointMap[type]}`;
+      console.warn('Using HTTP fallback to', url);
+      await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(payload) });
+      return true;
+    } catch (err) {
+      console.error('HTTP signaling failed', err);
+      return false;
     }
   };
 
   const otherId = () => selectedConversation?._id;
 
-  // START CALL
+  // Caller: start local camera and send offer
   const startCall = async () => {
+    const to = otherId();
+    if (!to) return;
     try {
-      const to = otherId();
-
-      if (!to) return;
-
-      // GET CAMERA
-      const stream = await navigator.mediaDevices.getUserMedia(
-        constraints
-      );
-
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       localStreamRef.current = stream;
+      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
 
-      // SHOW LOCAL VIDEO
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
+      pcRef.current = new RTCPeerConnection({ iceServers: getIceServers() });
 
-      // CREATE PEER
-      const pc = createPeerConnection(to);
+      pcRef.current.onicecandidate = (e) => {
+        if (e.candidate) {
+          console.log('[pc] local ice candidate ->', e.candidate);
+          sendSignal('ice', { to, candidate: e.candidate });
+        }
+      };
 
-      pcRef.current = pc;
+      pcRef.current.ontrack = (e) => {
+        console.log('[pc] ontrack, streams:', e.streams);
+        try {
+          const stream = e.streams && e.streams[0];
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = stream;
+            // attach debug event handlers to help diagnose black-screen issues on mobile
+            remoteVideoRef.current.onloadeddata = () => console.log('[video] remote loadeddata', { readyState: remoteVideoRef.current.readyState, paused: remoteVideoRef.current.paused });
+            remoteVideoRef.current.onplaying = () => {
+              console.log('[video] remote playing');
+              snapshotRemoteFrame();
+            };
+            remoteVideoRef.current.onpause = () => console.log('[video] remote paused');
+            remoteVideoRef.current.onerror = (ev) => console.error('[video] remote error', ev);
+            // log tracks
+            try { console.log('[video] remote tracks', stream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled }))); } catch (err) {}
+          }
+        } catch (err) { console.error('ontrack handling failed', err); }
+      };
 
-      // ADD TRACKS
-      stream.getTracks().forEach((track) => {
-        pc.addTrack(track, stream);
-      });
+      stream.getTracks().forEach((t) => pcRef.current.addTrack(t, stream));
 
-      // CREATE OFFER
-      const offer = await pc.createOffer();
-
-      await pc.setLocalDescription(offer);
-
-      // SEND OFFER
-      await sendSignal("call", {
-        to,
-        offer: pc.localDescription,
-      });
-
-      setCallState("calling");
+      const offer = await pcRef.current.createOffer();
+      await pcRef.current.setLocalDescription(offer);
+      await sendSignal('call', { to, offer: pcRef.current.localDescription });
+      setCallState('calling');
     } catch (err) {
-      console.error("Start Call Error:", err);
+      console.error('Error starting call:', err);
     }
   };
 
-  // ACCEPT CALL
-  const acceptIncoming = async (inc = null) => {
+  // Receiver: do NOT open camera. Create peer, set remote desc, answer.
+  const acceptIncoming = async (incomingParam = null) => {
+    let inc = incomingParam || incoming;
+    // If this was bound directly to an onClick, React may pass the click event as first arg.
+    // Detect and ignore synthetic/DOM events and fall back to the stored `incoming` payload.
+    if (inc && (inc.nativeEvent || inc.type === 'click' || inc._reactName)) {
+      inc = incoming;
+    }
+    if (!inc) return;
     try {
-      const data = inc || incoming;
-
-      if (!data) return;
-
-      const from = data.from;
-
-      let offer = data.offer || data;
-
-      if (offer.offer) {
-        offer = offer.offer;
+      const { from } = inc;
+      // normalize offer payload (some signaling paths wrap it differently)
+      let offer = inc.offer || inc;
+      if (offer && offer.offer) offer = offer.offer;
+      if (!offer || !offer.sdp) {
+        console.error('acceptIncoming: missing offer.sdp, aborting', offer);
+        return;
       }
+      if (!offer.type) {
+        console.warn('acceptIncoming: offer.type missing, defaulting to "offer"');
+        offer = { ...offer, type: 'offer' };
+      }
+      pcRef.current = new RTCPeerConnection({ iceServers: getIceServers() });
 
-      const pc = createPeerConnection(from);
+      pcRef.current.onicecandidate = (e) => {
+        if (e.candidate) {
+          console.log('[pc] remote-side local ice ->', e.candidate);
+          sendSignal('ice', { to: from, candidate: e.candidate });
+        }
+      };
 
-      pcRef.current = pc;
+      pcRef.current.ontrack = (e) => {
+        console.log('[pc] ontrack (receiver), streams:', e.streams);
+        try {
+          const stream = e.streams && e.streams[0];
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = stream;
+            remoteVideoRef.current.onloadeddata = () => console.log('[video] remote loadeddata', { readyState: remoteVideoRef.current.readyState });
+            remoteVideoRef.current.onplaying = () => { console.log('[video] remote playing'); snapshotRemoteFrame(); };
+            remoteVideoRef.current.onerror = (ev) => console.error('[video] remote error', ev);
+            try { console.log('[video] remote tracks', stream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled }))); } catch (err) {}
+          }
+        } catch (err) { console.error('ontrack (receiver) handling failed', err); }
+      };
 
-      // SET REMOTE OFFER
-      await pc.setRemoteDescription(
-        new RTCSessionDescription(offer)
-      );
-
-      // CREATE ANSWER
-      const answer = await pc.createAnswer();
-
-      await pc.setLocalDescription(answer);
-
-      // SEND ANSWER
-      await sendSignal("answer", {
-        to: from,
-        answer: pc.localDescription,
-      });
-
+      await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pcRef.current.createAnswer();
+      await pcRef.current.setLocalDescription(answer);
+      await sendSignal('answer', { to: from, answer: pcRef.current.localDescription });
+      // stop ringtone when answering
+      stopRingtone();
       setIncoming(null);
-      setCallState("in-call");
+      setCallState('in-call');
     } catch (err) {
-      console.error("Accept Call Error:", err);
+      console.error('Error accepting call:', err);
     }
   };
 
-  // END CALL
   const endCall = () => {
-    try {
-      pcRef.current?.close();
-    } catch (e) {}
-
-    try {
-      localStreamRef.current?.getTracks().forEach((track) => {
-        track.stop();
-      });
-    } catch (e) {}
-
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = null;
-    }
-
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = null;
-    }
-
-    const to =
-      selectedConversation?._id || incoming?.from;
-
-    if (to) {
-      sendSignal("end", { to });
-    }
-
+    try { pcRef.current?.close(); } catch (e) {}
+    try { localStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch (e) {}
+    try { if (localVideoRef.current) localVideoRef.current.srcObject = null; } catch (e) {}
+    try { if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null; } catch (e) {}
     pcRef.current = null;
     localStreamRef.current = null;
-
+    // notify the other side
+    const to = selectedConversation?._id || (incoming && incoming.from);
+    if (to) sendSignal('end', { to });
+    // stop ringtone if any
+    stopRingtone();
     setIncoming(null);
-    setCallState("idle");
-
+    setCallState('idle');
     onClose && onClose();
   };
 
   useEffect(() => {
-    if (!socket || !visible) return;
+    if (!visible || !socket) return;
 
-    // INCOMING CALL
     const handleIncoming = ({ from, offer }) => {
-      console.log("Incoming Call");
-
-      const data = { from, offer };
-
-      setIncoming(data);
-
-      setCallState("ringing");
-
-      // AUTO ACCEPT
-      acceptIncoming(data);
+      const inc = { from, offer };
+      setIncoming(inc);
+      setCallState('ringing');
+      playRingtone();
+      // auto-answer incoming calls (receiver will NOT open local camera)
+      acceptIncoming(inc);
     };
+    const handleAnswered = async ({ answer }) => { try { await pcRef.current?.setRemoteDescription(new RTCSessionDescription(answer)); setCallState('in-call'); } catch (e) { console.error(e); } };
+    const handleRemoteIce = async ({ candidate }) => { try { await pcRef.current?.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) { console.error(e); } };
 
-    // CALL ANSWERED
-    const handleAnswered = async ({ answer }) => {
-      try {
-        await pcRef.current?.setRemoteDescription(
-          new RTCSessionDescription(answer)
-        );
+    socket.on('incoming-call', handleIncoming);
+    socket.on('call-answered', handleAnswered);
+    socket.on('ice-candidate', handleRemoteIce);
+    socket.on('call-ended', endCall);
 
-        setCallState("in-call");
-      } catch (err) {
-        console.error(err);
-      }
-    };
+    // Do not auto-start outgoing calls; user must click Start Call.
+    // (This prevents the receiver's UI from opening local camera unintentionally.)
 
-    // RECEIVE ICE
-    const handleRemoteIce = async ({ candidate }) => {
-      try {
-        if (candidate && pcRef.current) {
-          await pcRef.current.addIceCandidate(
-            new RTCIceCandidate(candidate)
-          );
-        }
-      } catch (err) {
-        console.error("ICE Error:", err);
-      }
-    };
-
-    socket.on("incoming-call", handleIncoming);
-    socket.on("call-answered", handleAnswered);
-    socket.on("ice-candidate", handleRemoteIce);
-    socket.on("call-ended", endCall);
-
-    if (initialIncoming) {
-      setIncoming(initialIncoming);
-      setCallState("ringing");
-    }
+    if (initialIncoming) { setIncoming(initialIncoming); setCallState('ringing'); }
 
     return () => {
-      socket.off("incoming-call", handleIncoming);
-      socket.off("call-answered", handleAnswered);
-      socket.off("ice-candidate", handleRemoteIce);
-      socket.off("call-ended", endCall);
-
-      try {
-        pcRef.current?.close();
-      } catch (e) {}
+      socket.off('incoming-call', handleIncoming);
+      socket.off('call-answered', handleAnswered);
+      socket.off('ice-candidate', handleRemoteIce);
+      socket.off('call-ended', endCall);
+      endCall();
     };
-  }, [socket, visible]);
+  }, [visible, socket, selectedConversation, initialIncoming]);
+
+  // Ringtone handling using WebAudio for compatibility (no external asset required)
+  const audioCtxRef = useRef(null);
+  const oscillatorRef = useRef(null);
+
+  const playRingtone = () => {
+    try {
+      if (audioCtxRef.current) return; // already playing
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      audioCtxRef.current = ctx;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(440, ctx.currentTime);
+      gain.gain.setValueAtTime(0.05, ctx.currentTime);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      oscillatorRef.current = { osc, gain };
+    } catch (e) {
+      console.warn('Ringtone failed', e);
+    }
+  };
+
+  const stopRingtone = () => {
+    try {
+      if (oscillatorRef.current) {
+        oscillatorRef.current.osc.stop();
+        oscillatorRef.current.osc.disconnect();
+        oscillatorRef.current.gain.disconnect();
+        oscillatorRef.current = null;
+      }
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close();
+        audioCtxRef.current = null;
+      }
+    } catch (e) {}
+  };
+
+  const snapshotRemoteFrame = () => {
+    try {
+      const v = remoteVideoRef.current;
+      const c = debugCanvasRef.current;
+      if (!v || !c) return;
+      const w = v.videoWidth || 320;
+      const h = v.videoHeight || 240;
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(v, 0, 0, w, h);
+      const px = Math.floor(w / 2);
+      const py = Math.floor(h / 2);
+      const data = ctx.getImageData(px, py, 1, 1).data;
+      const avg = (data[0] + data[1] + data[2]) / 3;
+      console.log('[video-snapshot] size', w, h, 'center RGBA', data, 'avg', avg);
+      if (avg < 8) console.warn('[video-snapshot] frame appears nearly black (avg<8)');
+    } catch (e) {
+      console.error('snapshotRemoteFrame failed', e);
+    }
+  };
 
   if (!visible) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-75">
       <div className="bg-gray-900 p-4 rounded-md w-[90%] max-w-3xl">
-
         <div className="flex gap-4">
-
-          {(callState === "calling" ||
-            (callState === "in-call" &&
-              localStreamRef.current)) ? (
+          {(callState === 'calling' || (callState === 'in-call' && localStreamRef.current)) ? (
             <>
-              {/* LOCAL VIDEO */}
-              <video
-                ref={localVideoRef}
-                autoPlay
-                muted
-                playsInline
-                className="w-1/2 rounded bg-black"
-                style={{ objectFit: "cover" }}
-              />
-
-              {/* REMOTE VIDEO */}
-              <video
-                ref={remoteVideoRef}
-                autoPlay
-                playsInline
-                className="w-1/2 rounded bg-black"
-                style={{ objectFit: "cover" }}
-              />
+              <video ref={localVideoRef} autoPlay muted playsInline className="w-1/2 rounded bg-black" style={{objectFit: 'cover'}} />
+              <video ref={remoteVideoRef} autoPlay playsInline muted className="w-1/2 rounded bg-black" style={{objectFit: 'cover'}} />
             </>
           ) : (
             <>
-              {/* REMOTE VIDEO ONLY */}
-              <video
-                ref={remoteVideoRef}
-                autoPlay
-                playsInline
-                className="w-full rounded bg-black"
-                style={{ objectFit: "cover" }}
-              />
+              <video ref={remoteVideoRef} autoPlay playsInline muted className="w-full rounded bg-black" style={{objectFit: 'cover'}} />
+              <canvas ref={debugCanvasRef} style={{display: 'none'}} />
             </>
           )}
         </div>
 
         <div className="mt-3">
-
-          {callState === "idle" && (
+          {callState === 'idle' && (
             <div className="flex justify-end">
-              <button
-                onClick={startCall}
-                className="px-3 py-1 bg-sky-600 text-white rounded"
-              >
-                Start Call
-              </button>
+              <button onClick={startCall} className="ml-2 px-2 py-1 bg-sky-600 text-white rounded">Start Call</button>
             </div>
           )}
 
-          {callState === "calling" && (
+          {callState === 'calling' && (
             <div className="flex justify-between items-center">
-              <span className="text-white">
-                Calling...
-              </span>
-
-              <button
-                onClick={endCall}
-                className="px-3 py-1 bg-red-600 rounded"
-              >
-                Cancel
-              </button>
+              <span className="text-gray-200">Calling...</span>
+              <button onClick={() => { endCall(); }} className="px-3 py-1 bg-red-600 rounded">Cancel</button>
             </div>
           )}
 
-          {callState === "ringing" && incoming && (
+          {callState === 'ringing' && incoming && (
             <div className="flex justify-between items-center">
-              <span className="text-white">
-                Incoming Call
-              </span>
-
+              <span className="text-gray-200">Incoming call from {incoming.from}</span>
               <div className="flex gap-2">
-                <button
-                  onClick={() => acceptIncoming()}
-                  className="px-3 py-1 bg-green-600 rounded"
-                >
-                  Accept
-                </button>
-
-                <button
-                  onClick={endCall}
-                  className="px-3 py-1 bg-red-600 rounded"
-                >
-                  Decline
-                </button>
+                <button onClick={() => acceptIncoming()} className="px-3 py-1 bg-green-600 rounded">Accept</button>
+                <button onClick={() => { endCall(); }} className="px-3 py-1 bg-red-600 rounded">Decline</button>
               </div>
             </div>
           )}
 
-          {callState === "in-call" && (
+          {callState === 'in-call' && (
             <div className="flex justify-end">
-              <button
-                onClick={endCall}
-                className="px-3 py-1 bg-red-600 rounded"
-              >
-                End
-              </button>
+              <button onClick={() => { endCall(); }} className="px-3 py-1 bg-red-600 rounded">End</button>
             </div>
           )}
         </div>
