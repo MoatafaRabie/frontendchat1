@@ -97,7 +97,18 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     const inc = incomingParam || incoming;
     if (!inc) return;
     try {
-      const { from, offer } = inc;
+      const { from } = inc;
+      // normalize offer payload (some signaling paths wrap it differently)
+      let offer = inc.offer || inc;
+      if (offer && offer.offer) offer = offer.offer;
+      if (!offer || !offer.sdp) {
+        console.error('acceptIncoming: missing offer.sdp, aborting', offer);
+        return;
+      }
+      if (!offer.type) {
+        console.warn('acceptIncoming: offer.type missing, defaulting to "offer"');
+        offer = { ...offer, type: 'offer' };
+      }
       pcRef.current = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
 
       pcRef.current.onicecandidate = (e) => {
@@ -267,4 +278,3 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
 };
 
 export default VideoChat;
-
