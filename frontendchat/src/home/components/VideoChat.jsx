@@ -3,7 +3,7 @@ import { useSocketContext } from "../../context/SocketContext";
 import useConversation from "../../Zustans/useConversation";
 import { useAuth } from "../../context/AuthContext";
 
-// WebRTC video call flow using socket.io signaling (call request, accept, ICE)
+// One-way WebRTC: caller sends video (opens camera), receiver only receives and views.
 const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -14,25 +14,27 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const [callState, setCallState] = useState("idle"); // idle, calling, ringing, in-call
   const [incoming, setIncoming] = useState(null); // { from, offer }
 
-  const constraints = { video: true, audio: true };
   const { authUser } = useAuth();
+  // video-only one-way call: caller sends video, receiver only receives
+  const constraints = { video: true, audio: false };
 
-  const sendSignal = async (type, body) => {
-    // try socket first
+  const sendSignal = async (type, body = {}) => {
+    const fromId = body?.from || authUser?._id || (socket && socket.id) || null;
+    const payload = { ...body, from: fromId };
     try {
       if (socket && socket.connected) {
         switch (type) {
           case 'call':
-            socket.emit('call-user', { to: body.to, offer: body.offer, from: body.from });
+            socket.emit('call-user', { to: payload.to, offer: payload.offer, from: payload.from });
             return true;
           case 'answer':
-            socket.emit('answer-call', { to: body.to, answer: body.answer, from: body.from });
+            socket.emit('answer-call', { to: payload.to, answer: payload.answer, from: payload.from });
             return true;
           case 'ice':
-            socket.emit('ice-candidate', { to: body.to, candidate: body.candidate, from: body.from });
+            socket.emit('ice-candidate', { to: payload.to, candidate: payload.candidate, from: payload.from });
             return true;
           case 'end':
-            socket.emit('end-call', { to: body.to, from: body.from });
+            socket.emit('end-call', { to: payload.to, from: payload.from });
             return true;
           default:
             break;
@@ -42,164 +44,168 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       console.warn('socket signaling failed, falling back to HTTP', e);
     }
 
-    // fallback to HTTP POST to SSE signaling endpoints
+    // HTTP fallback
     try {
-      const endpointMap = {
-        call: '/api/signal/call',
-        answer: '/api/signal/answer',
-        ice: '/api/signal/ice',
-        end: '/api/signal/end'
-      };
+      const endpointMap = { call: '/api/signal/call', answer: '/api/signal/answer', ice: '/api/signal/ice', end: '/api/signal/end' };
       const url = `https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app${endpointMap[type]}`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      return data.ok ?? res.ok;
+      await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(payload) });
+      return true;
     } catch (err) {
       console.error('HTTP signaling failed', err);
       return false;
     }
   };
 
-  const startLocal = async () => {
+  const otherId = () => selectedConversation?._id;
+
+  // Caller: start local camera and send offer
+  const startCall = async () => {
+    const to = otherId();
+    if (!to) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       localStreamRef.current = stream;
       if (localVideoRef.current) localVideoRef.current.srcObject = stream;
-    } catch (err) {
-      console.error("getUserMedia failed:", err);
-    }
-  };
 
-  const createPeer = (toId) => {
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
-    });
+      pcRef.current = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
 
-    pc.onicecandidate = (e) => {
-      if (e.candidate) {
-        sendSignal('ice', { to: toId, from: authUser?._id, candidate: e.candidate });
-      }
-    };
+      pcRef.current.onicecandidate = (e) => {
+        if (e.candidate) {
+          console.log('[pc] local ice candidate ->', e.candidate);
+          sendSignal('ice', { to, candidate: e.candidate });
+        }
+      };
 
-    pc.ontrack = (e) => {
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
-    };
+      pcRef.current.ontrack = (e) => {
+        console.log('[pc] ontrack, streams:', e.streams);
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
+      };
 
-    localStreamRef.current?.getTracks().forEach((t) => pc.addTrack(t, localStreamRef.current));
-    return pc;
-  };
+      stream.getTracks().forEach((t) => pcRef.current.addTrack(t, stream));
 
-  const otherId = () => selectedConversation?._id;
-
-  const startCall = async () => {
-    await startLocal();
-    const to = otherId();
-    if (!to) return;
-    pcRef.current = createPeer(to);
-    try {
       const offer = await pcRef.current.createOffer();
       await pcRef.current.setLocalDescription(offer);
-      await sendSignal('call', { to, from: authUser?._id, offer: pcRef.current.localDescription });
-      setCallState("calling");
+      await sendSignal('call', { to, offer: pcRef.current.localDescription });
+      setCallState('calling');
     } catch (err) {
-      console.error("createOffer failed:", err);
+      console.error('Error starting call:', err);
     }
   };
 
+  // Receiver: do NOT open camera. Create peer, set remote desc, answer.
   const acceptIncoming = async () => {
     if (!incoming) return;
-    await startLocal();
-    pcRef.current = createPeer(incoming.from);
     try {
-      await pcRef.current.setRemoteDescription(new RTCSessionDescription(incoming.offer));
+      const { from, offer } = incoming;
+      pcRef.current = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+
+      pcRef.current.onicecandidate = (e) => {
+        if (e.candidate) {
+          console.log('[pc] remote-side local ice ->', e.candidate);
+          sendSignal('ice', { to: from, candidate: e.candidate });
+        }
+      };
+
+      pcRef.current.ontrack = (e) => {
+        console.log('[pc] ontrack (receiver), streams:', e.streams);
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
+      };
+
+      await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pcRef.current.createAnswer();
       await pcRef.current.setLocalDescription(answer);
-      await sendSignal('answer', { to: incoming.from, from: authUser?._id, answer: pcRef.current.localDescription });
+      await sendSignal('answer', { to: from, answer: pcRef.current.localDescription });
+      // stop ringtone when answering
+      stopRingtone();
       setIncoming(null);
-      setCallState("in-call");
+      setCallState('in-call');
     } catch (err) {
-      console.error("Error accepting call:", err);
+      console.error('Error accepting call:', err);
     }
   };
 
   const endCall = () => {
-    try {
-      pcRef.current?.close();
-    } catch (e) {}
-    localStreamRef.current?.getTracks().forEach((t) => t.stop());
+    try { pcRef.current?.close(); } catch (e) {}
+    try { localStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch (e) {}
+    try { if (localVideoRef.current) localVideoRef.current.srcObject = null; } catch (e) {}
+    try { if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null; } catch (e) {}
     pcRef.current = null;
     localStreamRef.current = null;
-    // notify remote that call ended
-    try {
-      const to = selectedConversation?._id || (incoming && incoming.from);
-      if (to) sendSignal('end', { to, from: authUser?._id });
-    } catch (e) {}
+    // notify the other side
+    const to = selectedConversation?._id || (incoming && incoming.from);
+    if (to) sendSignal('end', { to });
+    // stop ringtone if any
+    stopRingtone();
     setIncoming(null);
-    setCallState("idle");
-    onClose();
+    setCallState('idle');
+    onClose && onClose();
   };
 
   useEffect(() => {
-    if (!visible) return;
-    if (!socket) return;
+    if (!visible || !socket) return;
 
-    let mounted = true;
+    const handleIncoming = ({ from, offer }) => { setIncoming({ from, offer }); setCallState('ringing'); playRingtone(); };
+    const handleAnswered = async ({ answer }) => { try { await pcRef.current?.setRemoteDescription(new RTCSessionDescription(answer)); setCallState('in-call'); } catch (e) { console.error(e); } };
+    const handleRemoteIce = async ({ candidate }) => { try { await pcRef.current?.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) { console.error(e); } };
 
-    const handleIncoming = async ({ from, offer }) => {
-      if (!mounted) return;
-      setIncoming({ from, offer });
-      setCallState("ringing");
-    };
+    socket.on('incoming-call', handleIncoming);
+    socket.on('call-answered', handleAnswered);
+    socket.on('ice-candidate', handleRemoteIce);
+    socket.on('call-ended', endCall);
 
-    const handleAnswered = async ({ from, answer }) => {
-      try {
-        await pcRef.current?.setRemoteDescription(new RTCSessionDescription(answer));
-        setCallState("in-call");
-      } catch (err) {
-        console.error("Error handling answer:", err);
-      }
-    };
+    // auto-start call when visible (caller)
+    if (visible && selectedConversation) startCall();
 
-    const handleRemoteIce = async ({ from, candidate }) => {
-      try {
-        await pcRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
-      } catch (err) {
-        console.error("Error adding ICE candidate:", err);
-      }
-    };
-
-    socket.on("incoming-call", handleIncoming);
-    socket.on("call-answered", handleAnswered);
-    socket.on("ice-candidate", handleRemoteIce);
-    socket.on("call-ended", () => {
-      endCall();
-    });
-
-    // auto-start when visible (caller clicked Video button)
-    if (visible && selectedConversation) {
-      startCall();
-    }
-
-    // if parent passed an incoming call (from global event) set it
-    if (initialIncoming) {
-      setIncoming(initialIncoming);
-      setCallState('ringing');
-    }
+    if (initialIncoming) { setIncoming(initialIncoming); setCallState('ringing'); }
 
     return () => {
-      mounted = false;
-      socket.off("incoming-call", handleIncoming);
-      socket.off("call-answered", handleAnswered);
-      socket.off("ice-candidate", handleRemoteIce);
-      socket.off("call-ended");
+      socket.off('incoming-call', handleIncoming);
+      socket.off('call-answered', handleAnswered);
+      socket.off('ice-candidate', handleRemoteIce);
+      socket.off('call-ended', endCall);
       endCall();
     };
-  }, [visible, socket, selectedConversation, onClose]);
+  }, [visible, socket, selectedConversation]);
+
+  // Ringtone handling using WebAudio for compatibility (no external asset required)
+  const audioCtxRef = useRef(null);
+  const oscillatorRef = useRef(null);
+
+  const playRingtone = () => {
+    try {
+      if (audioCtxRef.current) return; // already playing
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      audioCtxRef.current = ctx;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(440, ctx.currentTime);
+      gain.gain.setValueAtTime(0.05, ctx.currentTime);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      oscillatorRef.current = { osc, gain };
+    } catch (e) {
+      console.warn('Ringtone failed', e);
+    }
+  };
+
+  const stopRingtone = () => {
+    try {
+      if (oscillatorRef.current) {
+        oscillatorRef.current.osc.stop();
+        oscillatorRef.current.osc.disconnect();
+        oscillatorRef.current.gain.disconnect();
+        oscillatorRef.current = null;
+      }
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close();
+        audioCtxRef.current = null;
+      }
+    } catch (e) {}
+  };
 
   if (!visible) return null;
 
@@ -207,8 +213,14 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-75">
       <div className="bg-gray-900 p-4 rounded-md w-[90%] max-w-3xl">
         <div className="flex gap-4">
-          <video ref={localVideoRef} autoPlay muted playsInline className="w-1/2 rounded bg-black" />
-          <video ref={remoteVideoRef} autoPlay playsInline className="w-1/2 rounded bg-black" />
+          {(callState === 'calling' || (callState === 'in-call' && localStreamRef.current)) ? (
+            <>
+              <video ref={localVideoRef} autoPlay muted playsInline className="w-1/2 rounded bg-black" />
+              <video ref={remoteVideoRef} autoPlay playsInline className="w-1/2 rounded bg-black" />
+            </>
+          ) : (
+            <video ref={remoteVideoRef} autoPlay playsInline className="w-full rounded bg-black" />
+          )}
         </div>
 
         <div className="mt-3">
@@ -221,7 +233,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
           {callState === 'calling' && (
             <div className="flex justify-between items-center">
               <span className="text-gray-200">Calling...</span>
-              <button onClick={async () => { await sendSignal('end', { to: selectedConversation?._id, from: authUser?._id }); setCallState('idle'); }} className="px-3 py-1 bg-red-600 rounded">Cancel</button>
+              <button onClick={() => { endCall(); }} className="px-3 py-1 bg-red-600 rounded">Cancel</button>
             </div>
           )}
 
@@ -230,14 +242,14 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
               <span className="text-gray-200">Incoming call from {incoming.from}</span>
               <div className="flex gap-2">
                 <button onClick={acceptIncoming} className="px-3 py-1 bg-green-600 rounded">Accept</button>
-                <button onClick={async () => { await sendSignal('end', { to: incoming.from, from: authUser?._id }); setIncoming(null); setCallState('idle'); }} className="px-3 py-1 bg-red-600 rounded">Decline</button>
+                <button onClick={() => { endCall(); }} className="px-3 py-1 bg-red-600 rounded">Decline</button>
               </div>
             </div>
           )}
 
           {callState === 'in-call' && (
             <div className="flex justify-end">
-              <button onClick={async () => { await sendSignal('end', { to: selectedConversation?._id, from: authUser?._id }); try { pcRef.current?.close(); } catch(e){} onClose(); }} className="px-3 py-1 bg-red-600 rounded">End</button>
+              <button onClick={() => { endCall(); }} className="px-3 py-1 bg-red-600 rounded">End</button>
             </div>
           )}
         </div>
