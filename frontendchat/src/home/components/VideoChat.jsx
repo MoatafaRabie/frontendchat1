@@ -240,10 +240,10 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
           {(callState === 'calling' || (callState === 'in-call' && localStreamRef.current)) ? (
             <>
               <video ref={localVideoRef} autoPlay muted playsInline className="w-1/2 rounded bg-black" />
-              <video ref={remoteVideoRef} autoPlay playsInline className="w-1/2 rounded bg-black" />
+              <video ref={remoteVideoRef} autoPlay playsInline muted className="w-1/2 rounded bg-black" />
             </>
           ) : (
-            <video ref={remoteVideoRef} autoPlay playsInline className="w-full rounded bg-black" />
+            <video ref={remoteVideoRef} autoPlay playsInline muted className="w-full rounded bg-black" />
           )}
         </div>
 
@@ -283,3 +283,4 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
 };
 
 export default VideoChat;
+
