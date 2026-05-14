@@ -94,7 +94,12 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
 
   // Receiver: do NOT open camera. Create peer, set remote desc, answer.
   const acceptIncoming = async (incomingParam = null) => {
-    const inc = incomingParam || incoming;
+    let inc = incomingParam || incoming;
+    // If this was bound directly to an onClick, React may pass the click event as first arg.
+    // Detect and ignore synthetic/DOM events and fall back to the stored `incoming` payload.
+    if (inc && (inc.nativeEvent || inc.type === 'click' || inc._reactName)) {
+      inc = incoming;
+    }
     if (!inc) return;
     try {
       const { from } = inc;
@@ -260,7 +265,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
             <div className="flex justify-between items-center">
               <span className="text-gray-200">Incoming call from {incoming.from}</span>
               <div className="flex gap-2">
-                <button onClick={acceptIncoming} className="px-3 py-1 bg-green-600 rounded">Accept</button>
+                <button onClick={() => acceptIncoming()} className="px-3 py-1 bg-green-600 rounded">Accept</button>
                 <button onClick={() => { endCall(); }} className="px-3 py-1 bg-red-600 rounded">Decline</button>
               </div>
             </div>
