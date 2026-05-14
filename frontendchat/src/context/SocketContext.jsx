@@ -45,7 +45,7 @@ export const SocketContextProvider = ({ children }) => {
             let es;
             try {
                 const userId = authUser._id || (authUser.user && authUser.user._id) || null;
-                es = new EventSource(`http://localhost:3001/events?userId=${encodeURIComponent(userId)}`);
+                es = new EventSource(`https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app/events?userId=${encodeURIComponent(userId)}`);
                 es.addEventListener('incoming-call', (e) => {
                     try { window.dispatchEvent(new CustomEvent('incoming-call', { detail: JSON.parse(e.data) })); } catch (err) {}
                 });
