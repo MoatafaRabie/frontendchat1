@@ -7,6 +7,7 @@ import { useAuth } from "../../context/AuthContext";
 const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const debugCanvasRef = useRef(null);
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
   const { socket } = useSocketContext();
@@ -87,7 +88,10 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
             remoteVideoRef.current.srcObject = stream;
             // attach debug event handlers to help diagnose black-screen issues on mobile
             remoteVideoRef.current.onloadeddata = () => console.log('[video] remote loadeddata', { readyState: remoteVideoRef.current.readyState, paused: remoteVideoRef.current.paused });
-            remoteVideoRef.current.onplaying = () => console.log('[video] remote playing');
+            remoteVideoRef.current.onplaying = () => {
+              console.log('[video] remote playing');
+              snapshotRemoteFrame();
+            };
             remoteVideoRef.current.onpause = () => console.log('[video] remote paused');
             remoteVideoRef.current.onerror = (ev) => console.error('[video] remote error', ev);
             // log tracks
@@ -145,7 +149,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
           if (remoteVideoRef.current) {
             remoteVideoRef.current.srcObject = stream;
             remoteVideoRef.current.onloadeddata = () => console.log('[video] remote loadeddata', { readyState: remoteVideoRef.current.readyState });
-            remoteVideoRef.current.onplaying = () => console.log('[video] remote playing');
+            remoteVideoRef.current.onplaying = () => { console.log('[video] remote playing'); snapshotRemoteFrame(); };
             remoteVideoRef.current.onerror = (ev) => console.error('[video] remote error', ev);
             try { console.log('[video] remote tracks', stream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled }))); } catch (err) {}
           }
@@ -255,6 +259,28 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     } catch (e) {}
   };
 
+  const snapshotRemoteFrame = () => {
+    try {
+      const v = remoteVideoRef.current;
+      const c = debugCanvasRef.current;
+      if (!v || !c) return;
+      const w = v.videoWidth || 320;
+      const h = v.videoHeight || 240;
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(v, 0, 0, w, h);
+      const px = Math.floor(w / 2);
+      const py = Math.floor(h / 2);
+      const data = ctx.getImageData(px, py, 1, 1).data;
+      const avg = (data[0] + data[1] + data[2]) / 3;
+      console.log('[video-snapshot] size', w, h, 'center RGBA', data, 'avg', avg);
+      if (avg < 8) console.warn('[video-snapshot] frame appears nearly black (avg<8)');
+    } catch (e) {
+      console.error('snapshotRemoteFrame failed', e);
+    }
+  };
+
   if (!visible) return null;
 
   return (
@@ -263,11 +289,14 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         <div className="flex gap-4">
           {(callState === 'calling' || (callState === 'in-call' && localStreamRef.current)) ? (
             <>
-              <video ref={localVideoRef} autoPlay muted playsInline className="w-1/2 rounded bg-black" />
-              <video ref={remoteVideoRef} autoPlay playsInline className="w-1/2 rounded bg-black" />
+              <video ref={localVideoRef} autoPlay muted playsInline className="w-1/2 rounded bg-black" style={{objectFit: 'cover'}} />
+              <video ref={remoteVideoRef} autoPlay playsInline muted className="w-1/2 rounded bg-black" style={{objectFit: 'cover'}} />
             </>
           ) : (
-            <video ref={remoteVideoRef} autoPlay playsInline className="w-full rounded bg-black" />
+            <>
+              <video ref={remoteVideoRef} autoPlay playsInline muted className="w-full rounded bg-black" style={{objectFit: 'cover'}} />
+              <canvas ref={debugCanvasRef} style={{display: 'none'}} />
+            </>
           )}
         </div>
 
@@ -307,4 +336,3 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
 };
 
 export default VideoChat;
-
