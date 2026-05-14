@@ -16,7 +16,9 @@ export const SocketContextProvider = ({ children }) => {
         if (authUser) {
             const userId = authUser._id || (authUser.user && authUser.user._id) || null;
             console.log('[SocketContext] initializing socket with userId=', userId);
-            const newSocket = io("https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app", {
+            // Determine signaling server URL: prefer env var, then page origin, then localhost.
+            const SIGNALING_URL = process.env.REACT_APP_SIGNALING_URL || (typeof window !== 'undefined' && window.location && window.location.origin) || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+            const newSocket = io(SIGNALING_URL, {
                 auth: { userId },
                 query: { userId },
             });
@@ -45,7 +47,10 @@ export const SocketContextProvider = ({ children }) => {
             let es;
             try {
                 const userId = authUser._id || (authUser.user && authUser.user._id) || null;
-                es = new EventSource(`http://localhost:3001/events?userId=${encodeURIComponent(userId)}`);
+                // EventSource needs an http(s) URL. Convert SIGNALING_URL if it is ws(s).
+                let esBase = (process.env.REACT_APP_SIGNALING_URL || (typeof window !== 'undefined' && window.location && window.location.origin) || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app');
+                esBase = esBase.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:').replace(/\/$/, '');
+                es = new EventSource(`${esBase}/events?userId=${encodeURIComponent(userId)}`);
                 es.addEventListener('incoming-call', (e) => {
                     try { window.dispatchEvent(new CustomEvent('incoming-call', { detail: JSON.parse(e.data) })); } catch (err) {}
                 });
