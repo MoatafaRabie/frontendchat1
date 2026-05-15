@@ -24,7 +24,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const [incoming, setIncoming] = useState(null); // { from, offer }
 
   const { authUser } = useAuth();
-  const API_BASE = 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+  const API_BASE =  'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
   const signalingBase = API_BASE.replace(/\/$/, '');
   const getIceServers = () => {
     // Use a lightweight default STUN server for P2P fallback.
@@ -48,6 +48,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         return;
       }
       try {
+        try { console.debug('[VideoChat] safeAttachTrack start', { kind: track.kind, sid: track.sid || track.id || null, hasMediaStreamTrack: !!track.mediaStreamTrack, readyState: track.mediaStreamTrack && track.mediaStreamTrack.readyState }); } catch(e){}
         if (typeof track.attach === 'function') track.attach(el);
       } catch (e) {
         console.warn('[VideoChat] track.attach failed', e);
@@ -65,20 +66,43 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         const p = el.play();
         if (p && typeof p.catch === 'function') p.catch(err => console.debug('[VideoChat] remote play() rejected', err));
       } catch (e) {}
-      // If after a short delay the element still has no frame, try repeated reattach attempts
       try {
-        const tryReattach = async (attempt = 1, maxAttempts = 4) => {
+        el.addEventListener && el.addEventListener('loadedmetadata', () => console.debug('[VideoChat] remote video loadedmetadata', { videoWidth: el.videoWidth, videoHeight: el.videoHeight }));
+        el.addEventListener && el.addEventListener('playing', () => console.debug('[VideoChat] remote video playing', { videoWidth: el.videoWidth, videoHeight: el.videoHeight }));
+      } catch(e) { }
+      // If after a short delay the element still has no frame, try repeated reattach attempts with exponential backoff
+      try {
+        const tryReattach = async (attempt = 1, maxAttempts = 8) => {
           try {
-            if (el.videoWidth && el.videoWidth > 0) return; // already showing frames
-            console.warn('[VideoChat] no frames after attach, reattach attempt', attempt);
+            if (el.videoWidth && el.videoWidth > 0) {
+              console.debug('[VideoChat] frames detected, reattach successful');
+              return; // already showing frames
+            }
+            if (attempt > 1) {
+              console.warn('[VideoChat] no frames detected, reattach attempt', attempt, 'of', maxAttempts);
+            }
+            // Force ensure muted and ensure element is ready to autoplay
+            try {
+              el.muted = true;
+              el.autoplay = true;
+              el.playsInline = true;
+            } catch(e){}
+            
             // Prefer using the underlying MediaStreamTrack if available
             try {
               if (track && track.mediaStreamTrack && track.mediaStreamTrack.readyState === 'live') {
                 try {
-                  el.srcObject = new MediaStream([track.mediaStreamTrack]);
+                  const ms = new MediaStream([track.mediaStreamTrack]);
+                  el.srcObject = ms;
                   el.muted = true; // allow autoplay
-                  const p = el.play(); if (p && typeof p.catch === 'function') p.catch(() => {});
-                  console.debug('[VideoChat] set srcObject from mediaStreamTrack');
+                  // Force play immediately
+                  try {
+                    const p = el.play();
+                    if (p && typeof p.catch === 'function') {
+                      p.catch((err) => { console.debug('[VideoChat] mediaStreamTrack play rejected', err.name); });
+                    }
+                  } catch (e) { console.warn('[VideoChat] mediaStreamTrack play() exception', e); }
+                  console.debug('[VideoChat] set srcObject from mediaStreamTrack, attempt', attempt);
                 } catch (e) { console.warn('[VideoChat] set srcObject from mediaStreamTrack failed', e); }
               }
             } catch (e) { console.warn('[VideoChat] mediaStreamTrack fallback failed', e); }
@@ -92,8 +116,13 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
                     if (newEl.srcObject) {
                       el.srcObject = newEl.srcObject;
                       el.muted = true;
-                      const p2 = el.play(); if (p2 && typeof p2.catch === 'function') p2.catch(()=>{});
-                      console.debug('[VideoChat] reattached via newEl.srcObject');
+                      try {
+                        const p2 = el.play();
+                        if (p2 && typeof p2.catch === 'function') {
+                          p2.catch((err) => { console.debug('[VideoChat] reattach play rejected', err.name); });
+                        }
+                      } catch (e) { console.warn('[VideoChat] reattach play() exception', e); }
+                      console.debug('[VideoChat] reattached via newEl.srcObject, attempt', attempt);
                     }
                   } catch (e) { console.warn('[VideoChat] reattach set srcObject failed', e); }
                   try { newEl.remove(); } catch (e) {}
@@ -101,16 +130,17 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
               } catch (e) { console.warn('[VideoChat] track.attach() reattach failed', e); }
             }
 
-            // If still no frames, schedule another attempt
+            // If still no frames, schedule another attempt with exponential backoff
             if ((!el.videoWidth || el.videoWidth === 0) && attempt < maxAttempts) {
-              setTimeout(() => tryReattach(attempt + 1, maxAttempts), 400);
+              const backoff = Math.min(100 + (attempt * 200), 1500);
+              setTimeout(() => tryReattach(attempt + 1, maxAttempts), backoff);
             } else if ((!el.videoWidth || el.videoWidth === 0)) {
-              console.warn('[VideoChat] reattach exhausted, scheduling diagnostic snapshot');
+              console.warn('[VideoChat] reattach exhausted after', maxAttempts, 'attempts');
               try { window.__vc_snapshot && window.__vc_snapshot(); } catch(e){}
             }
           } catch (e) { console.warn('[VideoChat] tryReattach outer', e); }
         };
-        setTimeout(() => tryReattach(1, 4), 400);
+        setTimeout(() => tryReattach(1, 8), 300);
       } catch (e) { console.warn('[VideoChat] schedule reattach failed', e); }
       try {
         // Helpful debug info when remote appears black
@@ -225,20 +255,38 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
           }
         }
         let room;
-        try {
-          room = await Video.connect(token, { name: roomName, tracks: [localTrack], audio: false });
-        } catch (err) {
-          // handle duplicate-identity error by retrying with a fresh identity once
+        const maxConnectRetries = 2;
+        for (let attempt = 0; attempt <= maxConnectRetries; attempt++) {
           try {
+            room = await Video.connect(token, { name: roomName, tracks: [localTrack], audio: false });
+            console.debug('[VideoChat] room connected successfully on attempt', attempt + 1);
+            break;
+          } catch (err) {
+            console.warn('[VideoChat] room connect failed attempt', attempt + 1, '/', maxConnectRetries + 1, err.message);
+            
+            // handle duplicate-identity error by retrying with a fresh identity
             if (err && err.message && err.message.toLowerCase().includes('duplicate identity')) {
               console.warn('[VideoChat] duplicate identity detected, retrying with new identity');
               sessionIdentityRef.current = `${authUser?._id || 'guest'}-${Math.random().toString(36).slice(2,8)}`;
               const newToken = await getTokenForRoom(roomName, sessionIdentityRef.current);
-              if (newToken) room = await Video.connect(newToken, { name: roomName, tracks: [localTrack], audio: false });
+              if (newToken && attempt < maxConnectRetries) {
+                try {
+                  room = await Video.connect(newToken, { name: roomName, tracks: [localTrack], audio: false });
+                  console.debug('[VideoChat] room connected with new identity');
+                  break;
+                } catch (err2) { 
+                  console.error('[VideoChat] retry connect failed', err2);
+                }
+              }
+            } else if (attempt < maxConnectRetries) {
+              // Retry with exponential backoff
+              await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+            } else if (attempt === maxConnectRetries) {
+              throw err;
             }
-          } catch (err2) { console.error('[VideoChat] retry connect failed', err2); throw err2; }
-          if (!room) throw err;
+          }
         }
+        if (!room) throw new Error('Failed to connect to room after retries');
         roomRef.current = room;
         try { window.__vc_room = room; } catch (e) {}
         // notify other user to join this Twilio room only after successful connect
@@ -251,14 +299,14 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
           console.debug('[VideoChat] connected to room', room.name, 'localParticipant', room.localParticipant.identity);
           room.localParticipant.tracks.forEach(pub => console.debug('[VideoChat] local pub', pub.trackSid, pub.track && pub.track.kind, 'isPublished', !!pub.track));
           room.participants.forEach(participant => {
-            console.debug('[VideoChat] existing participant', participant.identity, participant.sid);
-            participant.tracks.forEach(publication => {
-              console.debug('[VideoChat] publication', publication.trackSid, 'kind', publication.kind, 'isSubscribed', publication.isSubscribed);
-              if (publication.track && publication.track.mediaStreamTrack) {
-                console.debug('[VideoChat] mediaStreamTrack readyState', publication.track.mediaStreamTrack.readyState);
-              }
+              console.debug('[VideoChat] existing participant', participant.identity, participant.sid);
+              participant.tracks.forEach(publication => {
+                try { console.debug('[VideoChat] publication', { trackSid: publication.trackSid, kind: publication.kind, isSubscribed: publication.isSubscribed, hasTrack: !!publication.track }); } catch(e){}
+                if (publication.track && publication.track.mediaStreamTrack) {
+                  try { console.debug('[VideoChat] mediaStreamTrack readyState', publication.track.mediaStreamTrack.readyState); } catch(e){}
+                }
+              });
             });
-          });
           // richer room lifecycle logging
           room.on('participantConnected', p => console.debug('[VideoChat] participantConnected', p.identity));
           room.on('participantDisconnected', p => console.warn('[VideoChat] participantDisconnected', p.identity));
@@ -272,21 +320,28 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         } catch (e) { console.warn('[VideoChat] debug log error', e); }
         // attach existing participants' tracks
         room.participants.forEach(participant => {
+          console.debug('[VideoChat] attaching existing participant', participant.identity);
           participant.tracks.forEach(publication => {
+            try { console.debug('[VideoChat] publication (attach)', { trackSid: publication.trackSid, kind: publication.kind, isSubscribed: publication.isSubscribed }); } catch(e){}
             if (publication.isSubscribed) {
+              console.debug('[VideoChat] track already subscribed, attaching immediately');
               safeAttachTrack(publication.track);
             }
             publication.on('subscribed', track => {
+              try { console.debug('[VideoChat] publication subscribed event', { kind: track.kind, hasMediaStreamTrack: !!track.mediaStreamTrack }); } catch(e){}
               safeAttachTrack(track);
             });
             publication.on && publication.on('subscriptionFailed', (err) => console.warn('[VideoChat] subscriptionFailed', err));
           });
           participant.on('trackSubscribed', track => {
+            try { console.debug('[VideoChat] participant trackSubscribed', { kind: track.kind, hasMediaStreamTrack: !!track.mediaStreamTrack }); } catch(e){}
             safeAttachTrack(track);
           });
         });
         room.on('participantConnected', participant => {
+          console.debug('[VideoChat] new participant connected', participant.identity);
           participant.on('trackSubscribed', track => {
+            try { console.debug('[VideoChat] new participant trackSubscribed', { kind: track.kind, hasMediaStreamTrack: !!track.mediaStreamTrack }); } catch(e){}
             safeAttachTrack(track);
           });
           participant.on && participant.on('trackSubscriptionFailed', (err) => console.warn('[VideoChat] trackSubscriptionFailed', err));
@@ -307,7 +362,18 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         };
         pcRef.current.ontrack = (e) => {
           const stream = e.streams && e.streams[0];
-          if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
+          try { console.debug('[pc] ontrack (caller) got stream', stream && stream.id, stream && stream.getTracks && stream.getTracks().map(t => ({ kind: t.kind, readyState: t.readyState }))); } catch(e){}
+          if (remoteVideoRef.current) {
+            try { remoteVideoRef.current.srcObject = stream; } catch(e){}
+            try { remoteVideoRef.current.muted = true; remoteVideoRef.current.autoplay = true; } catch(e){}
+            try {
+              const playHandler = () => console.debug('[pc] remote playing (caller)', { videoWidth: remoteVideoRef.current.videoWidth, videoHeight: remoteVideoRef.current.videoHeight });
+              remoteVideoRef.current.addEventListener && remoteVideoRef.current.addEventListener('loadedmetadata', () => console.debug('[pc] remote loadedmetadata (caller)', { videoWidth: remoteVideoRef.current.videoWidth, videoHeight: remoteVideoRef.current.videoHeight }));
+              remoteVideoRef.current.addEventListener && remoteVideoRef.current.addEventListener('playing', playHandler);
+              // Force play attempt after a tick
+              setTimeout(() => { try { const p = remoteVideoRef.current.play(); if (p && typeof p.catch === 'function') p.catch(e => console.debug('[pc] remote play rejected (caller)', e.name)); } catch(e){} }, 50);
+            } catch(e){}
+          }
         };
         stream.getTracks().forEach((t) => pcRef.current.addTrack(t, stream));
         // flush any buffered remote description or ICE candidates that arrived early
@@ -321,11 +387,20 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         } catch (e) { console.warn('[VideoChat] apply buffered remoteDesc failed', e); }
         try {
           if (pendingIceRef.current && pendingIceRef.current.length) {
-            for (const c of pendingIceRef.current) {
-              try { await pcRef.current.addIceCandidate(new RTCIceCandidate(c)); } catch (err) { console.warn('[VideoChat] flush addIceCandidate failed', err); }
+            const candidates = pendingIceRef.current.splice(0);
+            for (const c of candidates) {
+              try { 
+                await pcRef.current.addIceCandidate(new RTCIceCandidate(c));
+              } catch (err) { 
+                // Ignore harmless errors like duplicate candidates
+                if (err.name === 'OperationError' || err.message.includes('duplicated')) {
+                  console.debug('[VideoChat] addIceCandidate duplicate/error (ignored)', err.name);
+                } else {
+                  console.warn('[VideoChat] flush addIceCandidate failed', err.name, err.message);
+                }
+              }
             }
-            pendingIceRef.current = [];
-            console.debug('[VideoChat] flushed buffered ICE candidates');
+            console.debug('[VideoChat] flushed buffered ICE candidates, count:', candidates.length);
           }
         } catch (e) { console.warn('[VideoChat] flush pending ICE outer failed', e); }
         const offer = await pcRef.current.createOffer();
@@ -370,16 +445,37 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         }
         // connect as viewer (no local camera)
         let roomObj;
-        try {
-          roomObj = await Video.connect(token, { name: roomName, audio: false });
-        } catch (err) {
-          if (err && err.message && err.message.toLowerCase().includes('duplicate identity')) {
-            console.warn('[VideoChat] duplicate identity for viewer, retrying with new identity');
-            sessionIdentityRef.current = `${authUser?._id || 'guest'}-${Math.random().toString(36).slice(2,8)}`;
-            const newToken = await getTokenForRoom(roomName, sessionIdentityRef.current);
-            if (newToken) roomObj = await Video.connect(newToken, { name: roomName, audio: false });
-          } else throw err;
+        const maxConnectRetries = 2;
+        for (let attempt = 0; attempt <= maxConnectRetries; attempt++) {
+          try {
+            roomObj = await Video.connect(token, { name: roomName, audio: false });
+            console.debug('[VideoChat] viewer room connected successfully on attempt', attempt + 1);
+            break;
+          } catch (err) {
+            console.warn('[VideoChat] viewer room connect failed attempt', attempt + 1, '/', maxConnectRetries + 1, err.message);
+            
+            if (err && err.message && err.message.toLowerCase().includes('duplicate identity')) {
+              console.warn('[VideoChat] duplicate identity for viewer, retrying with new identity');
+              sessionIdentityRef.current = `${authUser?._id || 'guest'}-${Math.random().toString(36).slice(2,8)}`;
+              const newToken = await getTokenForRoom(roomName, sessionIdentityRef.current);
+              if (newToken && attempt < maxConnectRetries) {
+                try {
+                  roomObj = await Video.connect(newToken, { name: roomName, audio: false });
+                  console.debug('[VideoChat] viewer room connected with new identity');
+                  break;
+                } catch (err2) {
+                  console.error('[VideoChat] viewer retry connect failed', err2);
+                }
+              }
+            } else if (attempt < maxConnectRetries) {
+              await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+            } else if (attempt === maxConnectRetries) {
+              throw err;
+            }
+          }
         }
+        
+        if (!roomObj) throw new Error('Failed to connect to room as viewer after retries');
         roomRef.current = roomObj;
         try { window.__vc_room = roomObj; } catch (e) {}
         // attach existing participants' tracks
@@ -389,14 +485,25 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
           } catch (e) {}
         roomObj.participants.forEach(participant => {
           participant.tracks.forEach(publication => {
+            try { console.debug('[VideoChat] publication (viewer)', { trackSid: publication.trackSid, kind: publication.kind, isSubscribed: publication.isSubscribed }); } catch(e){}
             if (publication.isSubscribed) safeAttachTrack(publication.track);
-            publication.on('subscribed', track => safeAttachTrack(track));
+            publication.on('subscribed', track => {
+              try { console.debug('[VideoChat] publication subscribed (viewer)', { kind: track.kind, hasMediaStreamTrack: !!track.mediaStreamTrack }); } catch(e){}
+              safeAttachTrack(track);
+            });
             publication.on && publication.on('subscriptionFailed', (err) => console.warn('[VideoChat] subscriptionFailed', err));
           });
-          participant.on('trackSubscribed', track => safeAttachTrack(track));
+          participant.on('trackSubscribed', track => {
+            try { console.debug('[VideoChat] participant trackSubscribed (viewer)', { kind: track.kind, hasMediaStreamTrack: !!track.mediaStreamTrack }); } catch(e){}
+            safeAttachTrack(track);
+          });
         });
         roomObj.on('participantConnected', participant => {
-          participant.on('trackSubscribed', track => safeAttachTrack(track));
+          console.debug('[VideoChat] new participant connected (viewer)', participant.identity);
+          participant.on('trackSubscribed', track => {
+            try { console.debug('[VideoChat] new participant trackSubscribed (viewer)', { kind: track.kind, hasMediaStreamTrack: !!track.mediaStreamTrack }); } catch(e){}
+            safeAttachTrack(track);
+          });
           participant.on && participant.on('trackSubscriptionFailed', (err) => console.warn('[VideoChat] trackSubscriptionFailed', err));
         });
         roomObj.on('disconnected', () => { console.debug('[VideoChat] viewer room disconnected'); try { setTimeout(() => { endCall(); }, 50); } catch(e){} });
@@ -420,17 +527,37 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       };
       pcRef.current.ontrack = (e) => {
         const stream = e.streams && e.streams[0];
-        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
+        try { console.debug('[pc] ontrack (accept) got stream', stream && stream.id, stream && stream.getTracks && stream.getTracks().map(t => ({ kind: t.kind, readyState: t.readyState }))); } catch(e){}
+        if (remoteVideoRef.current) {
+          try { remoteVideoRef.current.srcObject = stream; } catch(e){}
+          try { remoteVideoRef.current.muted = true; remoteVideoRef.current.autoplay = true; } catch(e){}
+          try {
+            const playHandler = () => console.debug('[pc] remote playing (accept)', { videoWidth: remoteVideoRef.current.videoWidth, videoHeight: remoteVideoRef.current.videoHeight });
+            remoteVideoRef.current.addEventListener && remoteVideoRef.current.addEventListener('loadedmetadata', () => console.debug('[pc] remote loadedmetadata (accept)', { videoWidth: remoteVideoRef.current.videoWidth, videoHeight: remoteVideoRef.current.videoHeight }));
+            remoteVideoRef.current.addEventListener && remoteVideoRef.current.addEventListener('playing', playHandler);
+            // Force play attempt after a tick
+            setTimeout(() => { try { const p = remoteVideoRef.current.play(); if (p && typeof p.catch === 'function') p.catch(e => console.debug('[pc] remote play rejected (accept)', e.name)); } catch(e){} }, 50);
+          } catch(e){}
+        }
       };
       await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
       // flush any ICE candidates that arrived before pc was created
       try {
         if (pendingIceRef.current && pendingIceRef.current.length) {
-          for (const c of pendingIceRef.current) {
-            try { await pcRef.current.addIceCandidate(new RTCIceCandidate(c)); } catch (err) { console.warn('[VideoChat] flush addIceCandidate (accept) failed', err); }
+          const candidates = pendingIceRef.current.splice(0);
+          for (const c of candidates) {
+            try { 
+              await pcRef.current.addIceCandidate(new RTCIceCandidate(c));
+            } catch (err) { 
+              // Ignore harmless errors like duplicate candidates
+              if (err.name === 'OperationError' || err.message.includes('duplicated')) {
+                console.debug('[VideoChat] addIceCandidate duplicate/error (accept, ignored)', err.name);
+              } else {
+                console.warn('[VideoChat] flush addIceCandidate (accept) failed', err.name, err.message);
+              }
+            }
           }
-          pendingIceRef.current = [];
-          console.debug('[VideoChat] flushed buffered ICE candidates (accept)');
+          console.debug('[VideoChat] flushed buffered ICE candidates (accept), count:', candidates.length);
         }
       } catch (e) { console.warn('[VideoChat] flush pending ICE (accept) outer failed', e); }
       const answer = await pcRef.current.createAnswer();
@@ -526,6 +653,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       socket.off('call-ended', endCall);
       endCall();
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, socket, selectedConversation, initialIncoming]);
 
   // Ringtone handling using WebAudio for compatibility (no external asset required)
