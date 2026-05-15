@@ -19,7 +19,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const [incoming, setIncoming] = useState(null); // { from, offer }
 
   const { authUser } = useAuth();
-  const API_BASE = 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+  const API_BASE =  'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
   const signalingBase = API_BASE.replace(/\/$/, '');
   const getIceServers = () => {
     // Use a lightweight default STUN server for P2P fallback.
@@ -405,6 +405,9 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       console.error('snapshotRemoteFrame failed', e);
     }
   };
+
+  // Expose snapshot helper for quick console debugging
+  try { window.__vc_snapshot = snapshotRemoteFrame; } catch (e) {}
 
   if (!visible) return null;
 
