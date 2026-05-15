@@ -19,7 +19,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const [incoming, setIncoming] = useState(null); // { from, offer }
 
   const { authUser } = useAuth();
-  const API_BASE =  'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+  const API_BASE = process.env.REACT_APP_SIGNALING_URL || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
   const signalingBase = API_BASE.replace(/\/$/, '');
   const getIceServers = () => {
     // Use a lightweight default STUN server for P2P fallback.
@@ -60,6 +60,31 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         const p = el.play();
         if (p && typeof p.catch === 'function') p.catch(err => console.debug('[VideoChat] remote play() rejected', err));
       } catch (e) {}
+      // If after a short delay the element still has no frame, try a stronger reattach
+      try {
+        setTimeout(async () => {
+          try {
+            if (!el.videoWidth || el.videoWidth === 0) {
+              console.warn('[VideoChat] no frames after attach, attempting reattach via track.attach()');
+              // Some Twilio tracks return a fresh element when attach() is called without args
+              if (typeof track.attach === 'function') {
+                const newEl = track.attach();
+                if (newEl) {
+                  // if newEl has a populated srcObject, move it to the visible element
+                  if (newEl.srcObject) {
+                    try {
+                      el.srcObject = newEl.srcObject;
+                      const p2 = el.play(); if (p2 && typeof p2.catch === 'function') p2.catch(()=>{});
+                      console.debug('[VideoChat] reattached via newEl.srcObject');
+                    } catch (e) { console.warn('[VideoChat] reattach set srcObject failed', e); }
+                  }
+                  try { newEl.remove(); } catch (e) {}
+                }
+              }
+            }
+          } catch (e) { console.warn('[VideoChat] reattach check failed', e); }
+        }, 500);
+      } catch (e) { console.warn('[VideoChat] schedule reattach failed', e); }
       try {
         // Helpful debug info when remote appears black
         console.debug('[VideoChat] safeAttachTrack done', {
