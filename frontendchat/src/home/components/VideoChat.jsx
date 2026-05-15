@@ -57,7 +57,25 @@ const VideoChat = ({ visible, onClose }) => {
     try {
       const token = await getTokenForRoom(roomName, identity);
       if (!token) throw new Error('no token');
-      const localTrack = await Video.createLocalVideoTrack();
+      // stop any existing local track before creating a new one (prevents "Device in use")
+      try {
+        if (localTrackRef.current) {
+          try { localTrackRef.current.stop(); } catch (e) {}
+          try { localTrackRef.current.detach && localTrackRef.current.detach().forEach(el => el.remove()); } catch(e){}
+          localTrackRef.current = null;
+        }
+      } catch (e) {}
+      let localTrack;
+      try {
+        localTrack = await Video.createLocalVideoTrack();
+      } catch (err) {
+        console.warn('[VideoChat] createLocalVideoTrack failed', err);
+        if (err && err.name === 'NotReadableError') {
+          console.warn('[VideoChat] Camera appears busy (Device in use). Close other apps/tabs using the camera and try again.');
+          return;
+        }
+        throw err;
+      }
       localTrackRef.current = localTrack;
       if (localVideoRef.current) try { localTrack.attach(localVideoRef.current); } catch (e) { try { localVideoRef.current.srcObject = new MediaStream([localTrack.mediaStreamTrack]); } catch(e){} }
       const room = await Video.connect(token, { name: roomName });
@@ -122,4 +140,3 @@ const VideoChat = ({ visible, onClose }) => {
 };
 
 export default VideoChat;
-
