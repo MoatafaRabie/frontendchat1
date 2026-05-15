@@ -50,14 +50,15 @@ const VideoChat = ({ visible, onClose }) => {
     participant.on && participant.on('trackSubscribed', t => attachTrackToEl(t, remoteVideoRef.current));
   };
 
-  const startCall = async () => {
+  // Start call and publish local video (will request camera)
+  const startCallWithCamera = async () => {
     const to = otherId(); if (!to) return;
     const roomName = `room-${to}`;
     const identity = `${authUser?._id || 'guest'}-${Math.random().toString(36).slice(2,8)}`;
     try {
       const token = await getTokenForRoom(roomName, identity);
       if (!token) throw new Error('no token');
-      // stop any existing local track before creating a new one (prevents "Device in use")
+      // stop existing local track
       try {
         if (localTrackRef.current) {
           try { localTrackRef.current.stop(); } catch (e) {}
@@ -84,7 +85,25 @@ const VideoChat = ({ visible, onClose }) => {
       room.participants.forEach(handleParticipant);
       room.on('participantConnected', handleParticipant);
       room.on('disconnected', () => endCall());
-    } catch (e) { console.error('startCall failed', e); }
+    } catch (e) { console.error('startCallWithCamera failed', e); }
+  };
+
+  // Start call without opening local camera (no local tracks published)
+  const startCallNoCamera = async () => {
+    const to = otherId(); if (!to) return;
+    const roomName = `room-${to}`;
+    const identity = `${authUser?._id || 'guest'}-${Math.random().toString(36).slice(2,8)}`;
+    try {
+      const token = await getTokenForRoom(roomName, identity);
+      if (!token) throw new Error('no token');
+      // connect without creating local tracks
+      const room = await Video.connect(token, { name: roomName });
+      roomRef.current = room;
+      setCallState('in-call');
+      room.participants.forEach(handleParticipant);
+      room.on('participantConnected', handleParticipant);
+      room.on('disconnected', () => endCall());
+    } catch (e) { console.error('startCallNoCamera failed', e); }
   };
 
   const joinAsViewer = async () => {
@@ -126,7 +145,8 @@ const VideoChat = ({ visible, onClose }) => {
         <div className="mt-3" style={{display: 'flex', justifyContent: 'flex-end', gap: 8}}>
           {callState === 'idle' && (
             <>
-              <button onClick={startCall} className="px-2 py-1 bg-sky-600 text-white rounded">Start Call</button>
+              <button onClick={startCallNoCamera} className="px-2 py-1 bg-sky-600 text-white rounded">Start Call (No Camera)</button>
+              <button onClick={startCallWithCamera} className="px-2 py-1 bg-indigo-600 text-white rounded">Start Call (With Camera)</button>
               <button onClick={joinAsViewer} className="px-2 py-1 bg-green-600 text-white rounded">Join as Viewer</button>
             </>
           )}
