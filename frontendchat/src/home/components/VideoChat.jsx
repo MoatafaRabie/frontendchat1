@@ -24,7 +24,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const [incoming, setIncoming] = useState(null); // { from, offer }
 
   const { authUser } = useAuth();
-  const API_BASE =  'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+  const API_BASE ='https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
   const signalingBase = API_BASE.replace(/\/$/, '');
   const getIceServers = () => {
     // Use a lightweight default STUN server for P2P fallback.
@@ -239,118 +239,146 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
           return;
         }
         // will notify the callee after successful connect
-        const localTrack = await Video.createLocalVideoTrack();
-        localTrackRef.current = localTrack;
-        if (localVideoRef.current) {
-          // attach Twilio track to local video element
-          try {
-            localTrack.attach(localVideoRef.current);
-          } catch (e) {
-            // fallback: create a MediaStream from the MediaStreamTrack
-            console.warn('[VideoChat] attach failed, using srcObject fallback', e);
+        console.debug('[VideoChat] attempting Twilio Video connection');
+        try {
+          const localTrack = await Video.createLocalVideoTrack();
+          localTrackRef.current = localTrack;
+          if (localVideoRef.current) {
+            // attach Twilio track to local video element
             try {
-              const ms = new MediaStream([localTrack.mediaStreamTrack]);
-              localVideoRef.current.srcObject = ms;
-            } catch (ex) { console.error('fallback set srcObject failed', ex); }
+              localTrack.attach(localVideoRef.current);
+            } catch (e) {
+              // fallback: create a MediaStream from the MediaStreamTrack
+              console.warn('[VideoChat] attach failed, using srcObject fallback', e);
+              try {
+                const ms = new MediaStream([localTrack.mediaStreamTrack]);
+                localVideoRef.current.srcObject = ms;
+              } catch (ex) { console.error('fallback set srcObject failed', ex); }
+            }
           }
-        }
-        let room;
-        const maxConnectRetries = 2;
-        for (let attempt = 0; attempt <= maxConnectRetries; attempt++) {
-          try {
-            room = await Video.connect(token, { name: roomName, tracks: [localTrack], audio: false });
-            console.debug('[VideoChat] room connected successfully on attempt', attempt + 1);
-            break;
-          } catch (err) {
-            console.warn('[VideoChat] room connect failed attempt', attempt + 1, '/', maxConnectRetries + 1, err.message);
-            
-            // handle duplicate-identity error by retrying with a fresh identity
-            if (err && err.message && err.message.toLowerCase().includes('duplicate identity')) {
-              console.warn('[VideoChat] duplicate identity detected, retrying with new identity');
-              sessionIdentityRef.current = `${authUser?._id || 'guest'}-${Math.random().toString(36).slice(2,8)}`;
-              const newToken = await getTokenForRoom(roomName, sessionIdentityRef.current);
-              if (newToken && attempt < maxConnectRetries) {
-                try {
-                  room = await Video.connect(newToken, { name: roomName, tracks: [localTrack], audio: false });
-                  console.debug('[VideoChat] room connected with new identity');
-                  break;
-                } catch (err2) { 
-                  console.error('[VideoChat] retry connect failed', err2);
+          let room;
+          const maxConnectRetries = 2;
+          for (let attempt = 0; attempt <= maxConnectRetries; attempt++) {
+            try {
+              // Add a 15 second timeout for Twilio connection
+              const connectPromise = Video.connect(token, { name: roomName, tracks: [localTrack], audio: false });
+              const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Twilio connection timeout after 15s')), 15000)
+              );
+              room = await Promise.race([connectPromise, timeoutPromise]);
+              console.debug('[VideoChat] room connected successfully on attempt', attempt + 1);
+              break;
+            } catch (err) {
+              console.warn('[VideoChat] room connect failed attempt', attempt + 1, '/', maxConnectRetries + 1, err.message);
+              
+              // handle duplicate-identity error by retrying with a fresh identity
+              if (err && err.message && err.message.toLowerCase().includes('duplicate identity')) {
+                console.warn('[VideoChat] duplicate identity detected, retrying with new identity');
+                sessionIdentityRef.current = `${authUser?._id || 'guest'}-${Math.random().toString(36).slice(2,8)}`;
+                const newToken = await getTokenForRoom(roomName, sessionIdentityRef.current);
+                if (newToken && attempt < maxConnectRetries) {
+                  try {
+                    const connectPromise = Video.connect(newToken, { name: roomName, tracks: [localTrack], audio: false });
+                    const timeoutPromise = new Promise((_, reject) => 
+                      setTimeout(() => reject(new Error('Twilio connection timeout after 15s')), 15000)
+                    );
+                    room = await Promise.race([connectPromise, timeoutPromise]);
+                    console.debug('[VideoChat] room connected with new identity');
+                    break;
+                  } catch (err2) { 
+                    console.error('[VideoChat] retry connect failed', err2);
+                  }
                 }
+              } else if (attempt < maxConnectRetries) {
+                // Retry with exponential backoff
+                await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+              } else if (attempt === maxConnectRetries) {
+                // Twilio failed completely, will fallback to P2P
+                console.warn('[VideoChat] Twilio connection exhausted, will fallback to P2P');
+                throw err;
               }
-            } else if (attempt < maxConnectRetries) {
-              // Retry with exponential backoff
-              await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
-            } else if (attempt === maxConnectRetries) {
-              throw err;
             }
           }
-        }
-        if (!room) throw new Error('Failed to connect to room after retries');
-        roomRef.current = room;
-        try { window.__vc_room = room; } catch (e) {}
-        // notify other user to join this Twilio room only after successful connect
-        try {
-          if (!notifiedRef.current) { await sendSignal('call', { to, room: roomName }); notifiedRef.current = true; }
-        } catch (e) { console.warn('[VideoChat] failed to notify callee after connect', e); }
-        setCallState('in-call');
-        // Debug: log room/participant/track state to help diagnose black remote video
-        try {
-          console.debug('[VideoChat] connected to room', room.name, 'localParticipant', room.localParticipant.identity);
-          room.localParticipant.tracks.forEach(pub => console.debug('[VideoChat] local pub', pub.trackSid, pub.track && pub.track.kind, 'isPublished', !!pub.track));
-          room.participants.forEach(participant => {
-              console.debug('[VideoChat] existing participant', participant.identity, participant.sid);
-              participant.tracks.forEach(publication => {
-                try { console.debug('[VideoChat] publication', { trackSid: publication.trackSid, kind: publication.kind, isSubscribed: publication.isSubscribed, hasTrack: !!publication.track }); } catch(e){}
-                if (publication.track && publication.track.mediaStreamTrack) {
-                  try { console.debug('[VideoChat] mediaStreamTrack readyState', publication.track.mediaStreamTrack.readyState); } catch(e){}
-                }
+          if (!room) throw new Error('Failed to connect to room after retries');
+          roomRef.current = room;
+          try { window.__vc_room = room; } catch (e) {}
+          // notify other user to join this Twilio room only after successful connect
+          try {
+            if (!notifiedRef.current) { await sendSignal('call', { to, room: roomName }); notifiedRef.current = true; }
+          } catch (e) { console.warn('[VideoChat] failed to notify callee after connect', e); }
+          setCallState('in-call');
+          // Debug: log room/participant/track state to help diagnose black remote video
+          try {
+            console.debug('[VideoChat] connected to room', room.name, 'localParticipant', room.localParticipant.identity);
+            room.localParticipant.tracks.forEach(pub => console.debug('[VideoChat] local pub', pub.trackSid, pub.track && pub.track.kind, 'isPublished', !!pub.track));
+            room.participants.forEach(participant => {
+                console.debug('[VideoChat] existing participant', participant.identity, participant.sid);
+                participant.tracks.forEach(publication => {
+                  try { console.debug('[VideoChat] publication', { trackSid: publication.trackSid, kind: publication.kind, isSubscribed: publication.isSubscribed, hasTrack: !!publication.track }); } catch(e){}
+                  if (publication.track && publication.track.mediaStreamTrack) {
+                    try { console.debug('[VideoChat] mediaStreamTrack readyState', publication.track.mediaStreamTrack.readyState); } catch(e){}
+                  }
+                });
               });
+            // richer room lifecycle logging
+            room.on('participantConnected', p => console.debug('[VideoChat] participantConnected', p.identity));
+            room.on('participantDisconnected', p => console.warn('[VideoChat] participantDisconnected', p.identity));
+            room.on('reconnecting', () => console.warn('[VideoChat] room reconnecting'));
+            room.on('reconnected', () => console.warn('[VideoChat] room reconnected'));
+            room.on('disconnected', (roomObj, error) => {
+              console.warn('[VideoChat] room disconnected', error);
+              try { if (error) console.error('disconnect error', error); } catch (e) {}
+              try { setTimeout(() => { endCall(); }, 50); } catch (e) {}
             });
-          // richer room lifecycle logging
-          room.on('participantConnected', p => console.debug('[VideoChat] participantConnected', p.identity));
-          room.on('participantDisconnected', p => console.warn('[VideoChat] participantDisconnected', p.identity));
-          room.on('reconnecting', () => console.warn('[VideoChat] room reconnecting'));
-          room.on('reconnected', () => console.warn('[VideoChat] room reconnected'));
-          room.on('disconnected', (roomObj, error) => {
-            console.warn('[VideoChat] room disconnected', error);
-            try { if (error) console.error('disconnect error', error); } catch (e) {}
-            try { setTimeout(() => { endCall(); }, 50); } catch (e) {}
-          });
-        } catch (e) { console.warn('[VideoChat] debug log error', e); }
-        // attach existing participants' tracks
-        room.participants.forEach(participant => {
-          console.debug('[VideoChat] attaching existing participant', participant.identity);
-          participant.tracks.forEach(publication => {
-            try { console.debug('[VideoChat] publication (attach)', { trackSid: publication.trackSid, kind: publication.kind, isSubscribed: publication.isSubscribed }); } catch(e){}
-            if (publication.isSubscribed) {
-              console.debug('[VideoChat] track already subscribed, attaching immediately');
-              safeAttachTrack(publication.track);
-            }
-            publication.on('subscribed', track => {
-              try { console.debug('[VideoChat] publication subscribed event', { kind: track.kind, hasMediaStreamTrack: !!track.mediaStreamTrack }); } catch(e){}
+          } catch (e) { console.warn('[VideoChat] debug log error', e); }
+          // attach existing participants' tracks
+          room.participants.forEach(participant => {
+            console.debug('[VideoChat] attaching existing participant', participant.identity);
+            participant.tracks.forEach(publication => {
+              try { console.debug('[VideoChat] publication (attach)', { trackSid: publication.trackSid, kind: publication.kind, isSubscribed: publication.isSubscribed }); } catch(e){}
+              if (publication.isSubscribed) {
+                console.debug('[VideoChat] track already subscribed, attaching immediately');
+                safeAttachTrack(publication.track);
+              }
+              publication.on('subscribed', track => {
+                try { console.debug('[VideoChat] publication subscribed event', { kind: track.kind, hasMediaStreamTrack: !!track.mediaStreamTrack }); } catch(e){}
+                safeAttachTrack(track);
+              });
+              publication.on && publication.on('subscriptionFailed', (err) => console.warn('[VideoChat] subscriptionFailed', err));
+            });
+            participant.on('trackSubscribed', track => {
+              try { console.debug('[VideoChat] participant trackSubscribed', { kind: track.kind, hasMediaStreamTrack: !!track.mediaStreamTrack }); } catch(e){}
               safeAttachTrack(track);
             });
-            publication.on && publication.on('subscriptionFailed', (err) => console.warn('[VideoChat] subscriptionFailed', err));
           });
-          participant.on('trackSubscribed', track => {
-            try { console.debug('[VideoChat] participant trackSubscribed', { kind: track.kind, hasMediaStreamTrack: !!track.mediaStreamTrack }); } catch(e){}
-            safeAttachTrack(track);
+          room.on('participantConnected', participant => {
+            console.debug('[VideoChat] new participant connected', participant.identity);
+            participant.on('trackSubscribed', track => {
+              try { console.debug('[VideoChat] new participant trackSubscribed', { kind: track.kind, hasMediaStreamTrack: !!track.mediaStreamTrack }); } catch(e){}
+              safeAttachTrack(track);
+            });
+            participant.on && participant.on('trackSubscriptionFailed', (err) => console.warn('[VideoChat] trackSubscriptionFailed', err));
           });
-        });
-        room.on('participantConnected', participant => {
-          console.debug('[VideoChat] new participant connected', participant.identity);
-          participant.on('trackSubscribed', track => {
-            try { console.debug('[VideoChat] new participant trackSubscribed', { kind: track.kind, hasMediaStreamTrack: !!track.mediaStreamTrack }); } catch(e){}
-            safeAttachTrack(track);
-          });
-          participant.on && participant.on('trackSubscriptionFailed', (err) => console.warn('[VideoChat] trackSubscriptionFailed', err));
-        });
-        // listen for local track stopped
-        try { room.localParticipant && room.localParticipant.tracks.forEach(pub => pub.track && pub.track.mediaStreamTrack && pub.track.mediaStreamTrack.addEventListener && pub.track.mediaStreamTrack.addEventListener('ended', () => console.warn('[VideoChat] local mediaStreamTrack ended'))); } catch (e) {}
+          // listen for local track stopped
+          try { room.localParticipant && room.localParticipant.tracks.forEach(pub => pub.track && pub.track.mediaStreamTrack && pub.track.mediaStreamTrack.addEventListener && pub.track.mediaStreamTrack.addEventListener('ended', () => console.warn('[VideoChat] local mediaStreamTrack ended'))); } catch (e) {}
+        } catch (twilioErr) {
+          // Twilio failed - fallback to P2P
+          console.warn('[VideoChat] Twilio connection failed, falling back to P2P WebRTC', twilioErr.message);
+          if (localTrackRef.current) {
+            try { localTrackRef.current.stop(); } catch(e){}
+            try { localTrackRef.current.detach && localTrackRef.current.detach().forEach(el => el.remove()); } catch(e){}
+            localTrackRef.current = null;
+          }
+          // Continue to P2P fallback below
+          throw twilioErr;
+        }
       } else {
-        // fallback to previous P2P flow if Twilio token not available
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        console.debug('[VideoChat] no Twilio token, using P2P directly');
+      }
+      
+      if (!token || (roomRef.current === null && !roomRef.current)) {
+        // fallback to previous P2P flow if Twilio token not available or Twilio failed
+        console.debug('[VideoChat] starting P2P WebRTC fallback');
         localStreamRef.current = stream;
         if (localVideoRef.current) localVideoRef.current.srcObject = stream;
         pcRef.current = new RTCPeerConnection({ iceServers: getIceServers() });
