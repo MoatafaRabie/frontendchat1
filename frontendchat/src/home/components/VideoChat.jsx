@@ -13,13 +13,14 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const roomRef = useRef(null);
   const localTrackRef = useRef(null);
   const localStreamRef = useRef(null);
+  const tokenCacheRef = useRef({}); // { [roomName]: { token, ts } }
   const { socket } = useSocketContext();
   const { selectedConversation } = useConversation();
   const [callState, setCallState] = useState("idle"); // idle, calling, ringing, in-call
   const [incoming, setIncoming] = useState(null); // { from, offer }
 
   const { authUser } = useAuth();
-  const API_BASE = process.env.REACT_APP_SIGNALING_URL || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+  const API_BASE = 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
   const signalingBase = API_BASE.replace(/\/$/, '');
   const getIceServers = () => {
     // Use a lightweight default STUN server for P2P fallback.
@@ -99,6 +100,29 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     } catch (outer) { console.warn('[VideoChat] safeAttachTrack outer', outer); }
   };
 
+  // Get a cached Twilio token for a room, or fetch a new one.
+  const getTokenForRoom = async (roomName) => {
+    try {
+      const cache = tokenCacheRef.current[roomName];
+      const now = Date.now();
+      // reuse token for 50 minutes to avoid re-calling backend frequently
+      if (cache && cache.token && (now - cache.ts) < 50 * 60 * 1000) return cache.token;
+      const resp = await fetch(`${signalingBase}/api/twilio/token`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity: authUser?._id || 'guest', room: roomName })
+      });
+      if (!resp.ok) {
+        console.warn('[VideoChat] token endpoint returned', resp.status);
+        return null;
+      }
+      const { token } = await resp.json();
+      tokenCacheRef.current[roomName] = { token, ts: Date.now() };
+      return token;
+    } catch (e) {
+      console.error('[VideoChat] getTokenForRoom failed', e);
+      return null;
+    }
+  };
+
   const sendSignal = async (type, body = {}) => {
     const fromId = body?.from || authUser?._id || (socket && socket.id) || null;
     const payload = { ...body, from: fromId };
@@ -146,12 +170,9 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     if (!to) return;
     const roomName = `room-${to}`;
     try {
-      // Attempt Twilio Video flow: obtain token and connect with local video track
-      const resp = await fetch(`${signalingBase}/api/twilio/token`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity: authUser?._id || 'guest', room: roomName })
-      });
-      if (resp.ok) {
-        const { token } = await resp.json();
+      // Attempt Twilio Video flow: obtain cached token and connect with local video track
+      const token = await getTokenForRoom(roomName);
+      if (token) {
         // notify other user to join this Twilio room
         await sendSignal('call', { to, room: roomName });
         const localTrack = await Video.createLocalVideoTrack();
@@ -186,8 +207,15 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
               }
             });
           });
+          // richer room lifecycle logging
           room.on('participantConnected', p => console.debug('[VideoChat] participantConnected', p.identity));
-          room.on('disconnected', () => console.debug('[VideoChat] room disconnected'));
+          room.on('participantDisconnected', p => console.warn('[VideoChat] participantDisconnected', p.identity));
+          room.on('reconnecting', () => console.warn('[VideoChat] room reconnecting'));
+          room.on('reconnected', () => console.warn('[VideoChat] room reconnected'));
+          room.on('disconnected', (roomObj, error) => {
+            console.warn('[VideoChat] room disconnected', error);
+            try { if (error) console.error('disconnect error', error); } catch (e) {}
+          });
         } catch (e) { console.warn('[VideoChat] debug log error', e); }
         // attach existing participants' tracks
         room.participants.forEach(participant => {
@@ -198,6 +226,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
             publication.on('subscribed', track => {
               safeAttachTrack(track);
             });
+            publication.on && publication.on('subscriptionFailed', (err) => console.warn('[VideoChat] subscriptionFailed', err));
           });
           participant.on('trackSubscribed', track => {
             safeAttachTrack(track);
@@ -207,7 +236,10 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
           participant.on('trackSubscribed', track => {
             safeAttachTrack(track);
           });
+          participant.on && participant.on('trackSubscriptionFailed', (err) => console.warn('[VideoChat] trackSubscriptionFailed', err));
         });
+        // listen for local track stopped
+        try { room.localParticipant && room.localParticipant.tracks.forEach(pub => pub.track && pub.track.mediaStreamTrack && pub.track.mediaStreamTrack.addEventListener && pub.track.mediaStreamTrack.addEventListener('ended', () => console.warn('[VideoChat] local mediaStreamTrack ended'))); } catch (e) {}
       } else {
         // fallback to previous P2P flow if Twilio token not available
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -248,11 +280,8 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       const { from, room } = inc;
       // If the signaling payload contains a Twilio room, prefer joining the room
       const roomName = room || `room-${from}`;
-      const resp = await fetch(`${signalingBase}/api/twilio/token`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity: authUser?._id || 'guest', room: roomName })
-      });
-      if (resp.ok) {
-        const { token } = await resp.json();
+      const token = await getTokenForRoom(roomName);
+      if (token) {
         // connect as viewer (no local camera)
         const roomObj = await Video.connect(token, { name: roomName, audio: false });
         roomRef.current = roomObj;
@@ -266,11 +295,13 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
           participant.tracks.forEach(publication => {
             if (publication.isSubscribed) safeAttachTrack(publication.track);
             publication.on('subscribed', track => safeAttachTrack(track));
+            publication.on && publication.on('subscriptionFailed', (err) => console.warn('[VideoChat] subscriptionFailed', err));
           });
           participant.on('trackSubscribed', track => safeAttachTrack(track));
         });
         roomObj.on('participantConnected', participant => {
           participant.on('trackSubscribed', track => safeAttachTrack(track));
+          participant.on && participant.on('trackSubscriptionFailed', (err) => console.warn('[VideoChat] trackSubscriptionFailed', err));
         });
         roomObj.on('disconnected', () => console.debug('[VideoChat] viewer room disconnected'));
         stopRingtone();
