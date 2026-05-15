@@ -4,7 +4,6 @@ import useConversation from "../../Zustans/useConversation";
 import { useAuth } from "../../context/AuthContext";
 import Video from 'twilio-video';
 
-// One-way WebRTC: caller sends video (opens camera), receiver only receives and views.
 const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
