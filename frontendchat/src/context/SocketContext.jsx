@@ -17,7 +17,7 @@ export const SocketContextProvider = ({ children }) => {
             const userId = authUser._id || (authUser.user && authUser.user._id) || null;
             console.log('[SocketContext] initializing socket with userId=', userId);
             const SIGNALING_URL = 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
-            const socketOrigin = SIGNALING_URL || window.location.origin;
+            const socketOrigin = SIGNALING_URL;
             const newSocket = io(socketOrigin, {
                 auth: { userId },
                 query: { userId },
@@ -43,33 +43,44 @@ export const SocketContextProvider = ({ children }) => {
                 try { window.dispatchEvent(new CustomEvent('call-ended', { detail: data })); } catch (e) {}
             });
 
-            // SSE fallback: open EventSource to receive signaling when socket isn't available
+            // SSE fallback: only open EventSource if socket fails to connect within timeout
             let es;
-            try {
-                const userId = authUser._id || (authUser.user && authUser.user._id) || null;
-                const SIGNALING_URL = 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
-                const sseBase = SIGNALING_URL ? SIGNALING_URL.replace(/\/$/, '') : '';
-                const sseUrl = sseBase ? `${sseBase}/events?userId=${encodeURIComponent(userId)}` : `/events?userId=${encodeURIComponent(userId)}`;
-                console.log('[SocketContext] opening SSE', sseUrl);
-                es = new EventSource(sseUrl);
-                es.addEventListener('incoming-call', (e) => {
-                    try { window.dispatchEvent(new CustomEvent('incoming-call', { detail: JSON.parse(e.data) })); } catch (err) {}
-                });
-                es.addEventListener('call-answered', (e) => {
-                    try { window.dispatchEvent(new CustomEvent('call-answered', { detail: JSON.parse(e.data) })); } catch (err) {}
-                });
-                es.addEventListener('ice-candidate', (e) => {
-                    try { window.dispatchEvent(new CustomEvent('ice-candidate', { detail: JSON.parse(e.data) })); } catch (err) {}
-                });
-                es.addEventListener('call-ended', (e) => {
-                    try { window.dispatchEvent(new CustomEvent('call-ended', { detail: JSON.parse(e.data) })); } catch (err) {}
-                });
-                es.addEventListener('newmessages', (e) => {
-                    try { window.dispatchEvent(new CustomEvent('newmessages', { detail: JSON.parse(e.data) })); } catch (err) {}
-                });
-            } catch (err) {
-                console.warn('SSE not initialized', err);
-            }
+            const openSSE = () => {
+                try {
+                    const userId = authUser._id || (authUser.user && authUser.user._id) || null;
+                    const SIGNALING_URL =  'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+                    const sseBase = SIGNALING_URL.replace(/\/$/, '');
+                    const sseUrl = `${sseBase}/events?userId=${encodeURIComponent(userId)}`;
+                    console.warn('[SocketContext] opening SSE fallback', sseUrl);
+                    es = new EventSource(sseUrl);
+                    es.addEventListener('incoming-call', (e) => {
+                        try { window.dispatchEvent(new CustomEvent('incoming-call', { detail: JSON.parse(e.data) })); } catch (err) {}
+                    });
+                    es.addEventListener('call-answered', (e) => {
+                        try { window.dispatchEvent(new CustomEvent('call-answered', { detail: JSON.parse(e.data) })); } catch (err) {}
+                    });
+                    es.addEventListener('ice-candidate', (e) => {
+                        try { window.dispatchEvent(new CustomEvent('ice-candidate', { detail: JSON.parse(e.data) })); } catch (err) {}
+                    });
+                    es.addEventListener('call-ended', (e) => {
+                        try { window.dispatchEvent(new CustomEvent('call-ended', { detail: JSON.parse(e.data) })); } catch (err) {}
+                    });
+                    es.addEventListener('newmessages', (e) => {
+                        try { window.dispatchEvent(new CustomEvent('newmessages', { detail: JSON.parse(e.data) })); } catch (err) {}
+                    });
+                } catch (err) {
+                    console.warn('SSE not initialized', err);
+                }
+            };
+            // open SSE only if socket doesn't establish within 3s
+            const sseTimer = setTimeout(() => {
+                if (!newSocket || !newSocket.connected) openSSE();
+            }, 3000);
+            // if socket connects later, close SSE if open
+            newSocket.on('connect', () => {
+                if (es) try { es.close(); } catch (e) {}
+                clearTimeout(sseTimer);
+            });
 
             const { setMessages } = useConversation.getState ? useConversation.getState() : { setMessages: () => {} };
 
@@ -95,6 +106,7 @@ export const SocketContextProvider = ({ children }) => {
                 newSocket.off("newmessages", handleNewMessage);
                 newSocket.close();
                 if (es) try { es.close(); } catch (e) {}
+                clearTimeout && clearTimeout(sseTimer);
                 setSocket(null);
             };
         } else {
