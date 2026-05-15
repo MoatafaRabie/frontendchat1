@@ -16,7 +16,9 @@ export const SocketContextProvider = ({ children }) => {
         if (authUser) {
             const userId = authUser._id || (authUser.user && authUser.user._id) || null;
             console.log('[SocketContext] initializing socket with userId=', userId);
-            const newSocket = io("https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app", {
+            const SIGNALING_URL = 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+            const socketOrigin = SIGNALING_URL || window.location.origin;
+            const newSocket = io(socketOrigin, {
                 auth: { userId },
                 query: { userId },
             });
@@ -45,7 +47,11 @@ export const SocketContextProvider = ({ children }) => {
             let es;
             try {
                 const userId = authUser._id || (authUser.user && authUser.user._id) || null;
-                es = new EventSource(`https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app/events?userId=${encodeURIComponent(userId)}`);
+                const SIGNALING_URL = 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+                const sseBase = SIGNALING_URL ? SIGNALING_URL.replace(/\/$/, '') : '';
+                const sseUrl = sseBase ? `${sseBase}/events?userId=${encodeURIComponent(userId)}` : `/events?userId=${encodeURIComponent(userId)}`;
+                console.log('[SocketContext] opening SSE', sseUrl);
+                es = new EventSource(sseUrl);
                 es.addEventListener('incoming-call', (e) => {
                     try { window.dispatchEvent(new CustomEvent('incoming-call', { detail: JSON.parse(e.data) })); } catch (err) {}
                 });
