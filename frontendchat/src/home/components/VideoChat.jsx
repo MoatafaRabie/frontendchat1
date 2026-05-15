@@ -4,6 +4,7 @@ import useConversation from "../../Zustans/useConversation";
 import { useAuth } from "../../context/AuthContext";
 import Video from 'twilio-video';
 
+// One-way WebRTC: caller sends video (opens camera), receiver only receives and views.
 const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -91,21 +92,61 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         localTrackRef.current = localTrack;
         if (localVideoRef.current) {
           // attach Twilio track to local video element
-          localTrack.attach(localVideoRef.current);
+          try {
+            localTrack.attach(localVideoRef.current);
+          } catch (e) {
+            // fallback: create a MediaStream from the MediaStreamTrack
+            console.warn('[VideoChat] attach failed, using srcObject fallback', e);
+            try {
+              const ms = new MediaStream([localTrack.mediaStreamTrack]);
+              localVideoRef.current.srcObject = ms;
+            } catch (ex) { console.error('fallback set srcObject failed', ex); }
+          }
         }
         const room = await Video.connect(token, { name: roomName, tracks: [localTrack], audio: false });
         roomRef.current = room;
         setCallState('in-call');
+        // Debug: log room/participant/track state to help diagnose black remote video
+        try {
+          console.debug('[VideoChat] connected to room', room.name, 'localParticipant', room.localParticipant.identity);
+          room.localParticipant.tracks.forEach(pub => console.debug('[VideoChat] local pub', pub.trackSid, pub.track && pub.track.kind, 'isPublished', !!pub.track));
+          room.participants.forEach(participant => {
+            console.debug('[VideoChat] existing participant', participant.identity, participant.sid);
+            participant.tracks.forEach(publication => {
+              console.debug('[VideoChat] publication', publication.trackSid, 'kind', publication.kind, 'isSubscribed', publication.isSubscribed);
+              if (publication.track && publication.track.mediaStreamTrack) {
+                console.debug('[VideoChat] mediaStreamTrack readyState', publication.track.mediaStreamTrack.readyState);
+              }
+            });
+          });
+          room.on('participantConnected', p => console.debug('[VideoChat] participantConnected', p.identity));
+          room.on('disconnected', () => console.debug('[VideoChat] room disconnected'));
+        } catch (e) { console.warn('[VideoChat] debug log error', e); }
         // attach existing participants' tracks
         room.participants.forEach(participant => {
           participant.tracks.forEach(publication => {
-            if (publication.isSubscribed) publication.track.attach(remoteVideoRef.current);
-            publication.on('subscribed', track => track.attach(remoteVideoRef.current));
+            if (publication.isSubscribed) {
+              try { publication.track.attach(remoteVideoRef.current); }
+              catch (e) {
+                console.warn('[VideoChat] remote attach failed, using srcObject fallback', e);
+                try { remoteVideoRef.current.srcObject = new MediaStream([publication.track.mediaStreamTrack]); } catch (ex) {}
+              }
+            }
+            publication.on('subscribed', track => {
+              try { track.attach(remoteVideoRef.current); }
+              catch (e) { try { remoteVideoRef.current.srcObject = new MediaStream([track.mediaStreamTrack]); } catch (ex) {} }
+            });
           });
-          participant.on('trackSubscribed', track => track.attach(remoteVideoRef.current));
+          participant.on('trackSubscribed', track => {
+            try { track.attach(remoteVideoRef.current); }
+            catch (e) { try { remoteVideoRef.current.srcObject = new MediaStream([track.mediaStreamTrack]); } catch (ex) {} }
+          });
         });
         room.on('participantConnected', participant => {
-          participant.on('trackSubscribed', track => track.attach(remoteVideoRef.current));
+          participant.on('trackSubscribed', track => {
+            try { track.attach(remoteVideoRef.current); }
+            catch (e) { try { remoteVideoRef.current.srcObject = new MediaStream([track.mediaStreamTrack]); } catch (ex) {} }
+          });
         });
       } else {
         // fallback to previous P2P flow if Twilio token not available
@@ -157,6 +198,10 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         const roomObj = await Video.connect(token, { name: roomName, audio: false });
         roomRef.current = roomObj;
         // attach existing participants' tracks
+          try {
+            console.debug('[VideoChat] joined room as viewer', roomObj.name, 'localParticipant', roomObj.localParticipant && roomObj.localParticipant.identity);
+            roomObj.participants.forEach(participant => console.debug('[VideoChat] existing participant', participant.identity));
+          } catch (e) {}
         roomObj.participants.forEach(participant => {
           participant.tracks.forEach(publication => {
             if (publication.isSubscribed) publication.track.attach(remoteVideoRef.current);
@@ -167,6 +212,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         roomObj.on('participantConnected', participant => {
           participant.on('trackSubscribed', track => track.attach(remoteVideoRef.current));
         });
+        roomObj.on('disconnected', () => console.debug('[VideoChat] viewer room disconnected'));
         stopRingtone();
         setIncoming(null);
         setCallState('in-call');
