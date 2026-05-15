@@ -60,6 +60,17 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         const p = el.play();
         if (p && typeof p.catch === 'function') p.catch(err => console.debug('[VideoChat] remote play() rejected', err));
       } catch (e) {}
+      try {
+        // Helpful debug info when remote appears black
+        console.debug('[VideoChat] safeAttachTrack done', {
+          trackKind: track.kind,
+          hasMediaStreamTrack: !!track.mediaStreamTrack,
+          mediaReadyState: track.mediaStreamTrack && track.mediaStreamTrack.readyState,
+          videoElementProps: { videoWidth: el.videoWidth, videoHeight: el.videoHeight, paused: el.paused, srcObject: el.srcObject }
+        });
+        // expose last attached track for debugging in console
+        try { window.__vc_lastTrack = track; } catch (e) {}
+      } catch (dbg) { console.warn('[VideoChat] safeAttachTrack debug failed', dbg); }
     } catch (outer) { console.warn('[VideoChat] safeAttachTrack outer', outer); }
   };
 
@@ -135,6 +146,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         }
         const room = await Video.connect(token, { name: roomName, tracks: [localTrack], audio: false });
         roomRef.current = room;
+        try { window.__vc_room = room; } catch (e) {}
         setCallState('in-call');
         // Debug: log room/participant/track state to help diagnose black remote video
         try {
@@ -219,6 +231,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         // connect as viewer (no local camera)
         const roomObj = await Video.connect(token, { name: roomName, audio: false });
         roomRef.current = roomObj;
+        try { window.__vc_room = roomObj; } catch (e) {}
         // attach existing participants' tracks
           try {
             console.debug('[VideoChat] joined room as viewer', roomObj.name, 'localParticipant', roomObj.localParticipant && roomObj.localParticipant.identity);
