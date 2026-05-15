@@ -19,6 +19,8 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const [incoming, setIncoming] = useState(null); // { from, offer }
 
   const { authUser } = useAuth();
+  const API_BASE = 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+  const signalingBase = API_BASE.replace(/\/$/, '');
   const getIceServers = () => {
     // Use a lightweight default STUN server for P2P fallback.
     // When using Twilio Rooms (the default flow in this component), Twilio
@@ -29,6 +31,37 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   };
   // video-only one-way call: caller sends video, receiver only receives
   const constraints = { video: true, audio: false };
+
+  // Robust attach helper: try track.attach, fall back to srcObject from MediaStreamTrack, ensure play()
+  const safeAttachTrack = (track) => {
+    try {
+      const el = remoteVideoRef.current;
+      if (!track) return;
+      if (!el) {
+        // if element not mounted yet, retry shortly
+        setTimeout(() => safeAttachTrack(track), 150);
+        return;
+      }
+      try {
+        if (typeof track.attach === 'function') track.attach(el);
+      } catch (e) {
+        console.warn('[VideoChat] track.attach failed', e);
+      }
+      // if attach didn't populate srcObject, use mediaStreamTrack as fallback
+      try {
+        if (!el.srcObject && track.mediaStreamTrack) {
+          el.srcObject = new MediaStream([track.mediaStreamTrack]);
+        }
+      } catch (e) {
+        console.warn('[VideoChat] srcObject fallback failed', e);
+      }
+      // attempt to play (autoplay may require interaction; log if rejected)
+      try {
+        const p = el.play();
+        if (p && typeof p.catch === 'function') p.catch(err => console.debug('[VideoChat] remote play() rejected', err));
+      } catch (e) {}
+    } catch (outer) { console.warn('[VideoChat] safeAttachTrack outer', outer); }
+  };
 
   const sendSignal = async (type, body = {}) => {
     const fromId = body?.from || authUser?._id || (socket && socket.id) || null;
@@ -59,9 +92,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     // HTTP fallback
     try {
       const endpointMap = { call: '/api/signal/call', answer: '/api/signal/answer', ice: '/api/signal/ice', end: '/api/signal/end' };
-      const SIGNALING_URL =  (typeof window !== 'undefined' && window.location && window.location.origin) || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
-      const base = SIGNALING_URL.replace(/\/$/, '');
-      const url = `${base}${endpointMap[type]}`;
+      const url = `${signalingBase}${endpointMap[type]}`;
       console.warn('Using HTTP fallback to', url);
       await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(payload) });
       return true;
@@ -80,8 +111,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     const roomName = `room-${to}`;
     try {
       // Attempt Twilio Video flow: obtain token and connect with local video track
-      const SIGNALING_URL =  (typeof window !== 'undefined' && window.location && window.location.origin) || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
-      const resp = await fetch(`${SIGNALING_URL.replace(/\/$/, '')}/api/twilio/token`, {
+      const resp = await fetch(`${signalingBase}/api/twilio/token`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity: authUser?._id || 'guest', room: roomName })
       });
       if (resp.ok) {
@@ -126,26 +156,19 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         room.participants.forEach(participant => {
           participant.tracks.forEach(publication => {
             if (publication.isSubscribed) {
-              try { publication.track.attach(remoteVideoRef.current); }
-              catch (e) {
-                console.warn('[VideoChat] remote attach failed, using srcObject fallback', e);
-                try { remoteVideoRef.current.srcObject = new MediaStream([publication.track.mediaStreamTrack]); } catch (ex) {}
-              }
+              safeAttachTrack(publication.track);
             }
             publication.on('subscribed', track => {
-              try { track.attach(remoteVideoRef.current); }
-              catch (e) { try { remoteVideoRef.current.srcObject = new MediaStream([track.mediaStreamTrack]); } catch (ex) {} }
+              safeAttachTrack(track);
             });
           });
           participant.on('trackSubscribed', track => {
-            try { track.attach(remoteVideoRef.current); }
-            catch (e) { try { remoteVideoRef.current.srcObject = new MediaStream([track.mediaStreamTrack]); } catch (ex) {} }
+            safeAttachTrack(track);
           });
         });
         room.on('participantConnected', participant => {
           participant.on('trackSubscribed', track => {
-            try { track.attach(remoteVideoRef.current); }
-            catch (e) { try { remoteVideoRef.current.srcObject = new MediaStream([track.mediaStreamTrack]); } catch (ex) {} }
+            safeAttachTrack(track);
           });
         });
       } else {
@@ -188,8 +211,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       const { from, room } = inc;
       // If the signaling payload contains a Twilio room, prefer joining the room
       const roomName = room || `room-${from}`;
-      const SIGNALING_URL = process.env.REACT_APP_SIGNALING_URL || (typeof window !== 'undefined' && window.location && window.location.origin) || 'http://localhost:3001';
-      const resp = await fetch(`${SIGNALING_URL.replace(/\/$/, '')}/api/twilio/token`, {
+      const resp = await fetch(`${signalingBase}/api/twilio/token`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity: authUser?._id || 'guest', room: roomName })
       });
       if (resp.ok) {
@@ -204,13 +226,13 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
           } catch (e) {}
         roomObj.participants.forEach(participant => {
           participant.tracks.forEach(publication => {
-            if (publication.isSubscribed) publication.track.attach(remoteVideoRef.current);
-            publication.on('subscribed', track => track.attach(remoteVideoRef.current));
+            if (publication.isSubscribed) safeAttachTrack(publication.track);
+            publication.on('subscribed', track => safeAttachTrack(track));
           });
-          participant.on('trackSubscribed', track => track.attach(remoteVideoRef.current));
+          participant.on('trackSubscribed', track => safeAttachTrack(track));
         });
         roomObj.on('participantConnected', participant => {
-          participant.on('trackSubscribed', track => track.attach(remoteVideoRef.current));
+          participant.on('trackSubscribed', track => safeAttachTrack(track));
         });
         roomObj.on('disconnected', () => console.debug('[VideoChat] viewer room disconnected'));
         stopRingtone();
