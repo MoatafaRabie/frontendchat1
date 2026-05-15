@@ -43,11 +43,14 @@ const VideoChat = ({ visible, onClose }) => {
   const otherId = () => selectedConversation?._id;
 
   const handleParticipant = (participant) => {
+    try { console.debug('[VideoChat] handleParticipant', participant.identity); } catch(e){}
     participant.tracks.forEach(publication => {
+      try { console.debug('[VideoChat] publication', { trackSid: publication.trackSid, kind: publication.kind, isSubscribed: publication.isSubscribed }); } catch(e){}
       if (publication.isSubscribed && publication.track) attachTrackToEl(publication.track, remoteVideoRef.current);
-      publication.on && publication.on('subscribed', t => attachTrackToEl(t, remoteVideoRef.current));
+      publication.on && publication.on('subscribed', t => { console.debug('[VideoChat] publication.subscribed', { kind: t.kind }); attachTrackToEl(t, remoteVideoRef.current); });
+      publication.on && publication.on('unsubscribed', t => console.debug('[VideoChat] publication.unsubscribed', t && t.kind));
     });
-    participant.on && participant.on('trackSubscribed', t => attachTrackToEl(t, remoteVideoRef.current));
+    participant.on && participant.on('trackSubscribed', t => { console.debug('[VideoChat] participant.trackSubscribed', { kind: t.kind }); attachTrackToEl(t, remoteVideoRef.current); });
   };
 
   // Start call and publish local video (will request camera)
@@ -81,9 +84,13 @@ const VideoChat = ({ visible, onClose }) => {
       if (localVideoRef.current) try { localTrack.attach(localVideoRef.current); } catch (e) { try { localVideoRef.current.srcObject = new MediaStream([localTrack.mediaStreamTrack]); } catch(e){} }
       const room = await Video.connect(token, { name: roomName });
       roomRef.current = room;
+      try { window.__vc_room = room; } catch(e){}
+      console.debug('[VideoChat] room connected (caller)', { name: room.name, local: room.localParticipant && room.localParticipant.identity });
       setCallState('in-call');
       room.participants.forEach(handleParticipant);
-      room.on('participantConnected', handleParticipant);
+      room.on('participantConnected', participant => { console.debug('[VideoChat] participantConnected', participant.identity); handleParticipant(participant); participant.on && participant.on('trackSubscribed', t => console.debug('[VideoChat] participant.trackSubscribed (event)', t && t.kind)); });
+      room.on('reconnecting', () => console.debug('[VideoChat] room reconnecting'));
+      room.on('reconnected', () => console.debug('[VideoChat] room reconnected'));
       room.on('disconnected', () => endCall());
     } catch (e) { console.error('startCallWithCamera failed', e); }
   };
@@ -99,9 +106,13 @@ const VideoChat = ({ visible, onClose }) => {
       // connect without creating local tracks
       const room = await Video.connect(token, { name: roomName });
       roomRef.current = room;
+      try { window.__vc_room = room; } catch(e){}
+      console.debug('[VideoChat] room connected (no-camera)', { name: room.name, local: room.localParticipant && room.localParticipant.identity });
       setCallState('in-call');
       room.participants.forEach(handleParticipant);
-      room.on('participantConnected', handleParticipant);
+      room.on('participantConnected', participant => { console.debug('[VideoChat] participantConnected', participant.identity); handleParticipant(participant); participant.on && participant.on('trackSubscribed', t => console.debug('[VideoChat] participant.trackSubscribed (event)', t && t.kind)); });
+      room.on('reconnecting', () => console.debug('[VideoChat] room reconnecting'));
+      room.on('reconnected', () => console.debug('[VideoChat] room reconnected'));
       room.on('disconnected', () => endCall());
     } catch (e) { console.error('startCallNoCamera failed', e); }
   };
@@ -115,9 +126,13 @@ const VideoChat = ({ visible, onClose }) => {
       if (!token) throw new Error('no token');
       const room = await Video.connect(token, { name: roomName });
       roomRef.current = room;
+      try { window.__vc_room = room; } catch(e){}
+      console.debug('[VideoChat] room connected (viewer)', { name: room.name, local: room.localParticipant && room.localParticipant.identity });
       setCallState('in-call');
       room.participants.forEach(handleParticipant);
-      room.on('participantConnected', handleParticipant);
+      room.on('participantConnected', participant => { console.debug('[VideoChat] participantConnected', participant.identity); handleParticipant(participant); participant.on && participant.on('trackSubscribed', t => console.debug('[VideoChat] participant.trackSubscribed (event)', t && t.kind)); });
+      room.on('reconnecting', () => console.debug('[VideoChat] room reconnecting'));
+      room.on('reconnected', () => console.debug('[VideoChat] room reconnected'));
       room.on('disconnected', () => endCall());
     } catch (e) { console.error('joinAsViewer failed', e); }
   };
@@ -160,3 +175,4 @@ const VideoChat = ({ visible, onClose }) => {
 };
 
 export default VideoChat;
+
