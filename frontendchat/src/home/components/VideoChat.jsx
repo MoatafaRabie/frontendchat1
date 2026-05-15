@@ -13,6 +13,8 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const roomRef = useRef(null);
   const localTrackRef = useRef(null);
   const localStreamRef = useRef(null);
+  const pendingIceRef = useRef([]);
+  const pendingRemoteDescRef = useRef(null);
   const tokenCacheRef = useRef({}); // { [roomName]: { token, ts } }
   const sessionIdentityRef = useRef(null);
   const notifiedRef = useRef(false);
@@ -22,7 +24,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const [incoming, setIncoming] = useState(null); // { from, offer }
 
   const { authUser } = useAuth();
-  const API_BASE = process.env.REACT_APP_SIGNALING_URL || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+  const API_BASE = 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
   const signalingBase = API_BASE.replace(/\/$/, '');
   const getIceServers = () => {
     // Use a lightweight default STUN server for P2P fallback.
@@ -308,6 +310,24 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
           if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
         };
         stream.getTracks().forEach((t) => pcRef.current.addTrack(t, stream));
+        // flush any buffered remote description or ICE candidates that arrived early
+        try {
+          if (pendingRemoteDescRef.current) {
+            await pcRef.current.setRemoteDescription(new RTCSessionDescription(pendingRemoteDescRef.current));
+            pendingRemoteDescRef.current = null;
+            setCallState('in-call');
+            console.debug('[VideoChat] applied buffered remote description after pc creation');
+          }
+        } catch (e) { console.warn('[VideoChat] apply buffered remoteDesc failed', e); }
+        try {
+          if (pendingIceRef.current && pendingIceRef.current.length) {
+            for (const c of pendingIceRef.current) {
+              try { await pcRef.current.addIceCandidate(new RTCIceCandidate(c)); } catch (err) { console.warn('[VideoChat] flush addIceCandidate failed', err); }
+            }
+            pendingIceRef.current = [];
+            console.debug('[VideoChat] flushed buffered ICE candidates');
+          }
+        } catch (e) { console.warn('[VideoChat] flush pending ICE outer failed', e); }
         const offer = await pcRef.current.createOffer();
         await pcRef.current.setLocalDescription(offer);
         await sendSignal('call', { to, offer: pcRef.current.localDescription });
@@ -403,6 +423,16 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
       };
       await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
+      // flush any ICE candidates that arrived before pc was created
+      try {
+        if (pendingIceRef.current && pendingIceRef.current.length) {
+          for (const c of pendingIceRef.current) {
+            try { await pcRef.current.addIceCandidate(new RTCIceCandidate(c)); } catch (err) { console.warn('[VideoChat] flush addIceCandidate (accept) failed', err); }
+          }
+          pendingIceRef.current = [];
+          console.debug('[VideoChat] flushed buffered ICE candidates (accept)');
+        }
+      } catch (e) { console.warn('[VideoChat] flush pending ICE (accept) outer failed', e); }
       const answer = await pcRef.current.createAnswer();
       await pcRef.current.setLocalDescription(answer);
       await sendSignal('answer', { to: caller, answer: pcRef.current.localDescription });
@@ -455,8 +485,29 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       // auto-answer incoming calls (receiver will NOT open local camera)
       acceptIncoming(inc);
     };
-    const handleAnswered = async ({ answer }) => { try { await pcRef.current?.setRemoteDescription(new RTCSessionDescription(answer)); setCallState('in-call'); } catch (e) { console.error(e); } };
-    const handleRemoteIce = async ({ candidate }) => { try { await pcRef.current?.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) { console.error(e); } };
+    const handleAnswered = async ({ answer }) => {
+      try {
+        if (pcRef.current) {
+          await pcRef.current.setRemoteDescription(new RTCSessionDescription(answer));
+          setCallState('in-call');
+        } else {
+          pendingRemoteDescRef.current = answer;
+          console.debug('[VideoChat] buffered remote answer until pc ready');
+        }
+      } catch (e) { console.error(e); }
+    };
+
+    const handleRemoteIce = async ({ candidate }) => {
+      try {
+        if (pcRef.current) {
+          await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+        } else {
+          // buffer candidate until RTCPeerConnection exists
+          pendingIceRef.current.push(candidate);
+          console.debug('[VideoChat] buffered remote ICE candidate (no pc yet)');
+        }
+      } catch (e) { console.error(e); }
+    };
 
     socket.on('incoming-call', handleIncoming);
     socket.on('call-answered', handleAnswered);
