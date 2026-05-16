@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { connect as twilioConnect, createLocalVideoTrack } from 'twilio-video';
 import { useSocketContext } from "../../context/SocketContext";
 import useConversation from "../../Zustans/useConversation";
 import { useAuth } from "../../context/AuthContext";
@@ -9,6 +10,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const remoteVideoRef = useRef(null);
   const debugCanvasRef = useRef(null);
   const pcRef = useRef(null);
+  const twilioRoomRef = useRef(null);
   const localStreamRef = useRef(null);
   const { socket } = useSocketContext();
   const { selectedConversation } = useConversation();
@@ -51,7 +53,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     // HTTP fallback
     try {
       const endpointMap = { call: '/api/signal/call', answer: '/api/signal/answer', ice: '/api/signal/ice', end: '/api/signal/end' };
-      const SIGNALING_URL =  (typeof window !== 'undefined' && window.location && window.location.origin) || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+      const SIGNALING_URL = (typeof window !== 'undefined' && window.location && window.location.origin) || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
       const base = SIGNALING_URL.replace(/\/$/, '');
       const url = `${base}${endpointMap[type]}`;
       console.warn('Using HTTP fallback to', url);
@@ -69,6 +71,42 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const startCall = async () => {
     const to = otherId();
     if (!to) return;
+    // Try Twilio Video first (server must provide token)
+    try {
+      const SIGNALING_URL = process.env.REACT_APP_SIGNALING_URL || '';
+      const base = SIGNALING_URL.replace(/\/$/, '') || '';
+      const tokenRes = await fetch((base || '') + '/api/twilio/token', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity: authUser?._id || 'guest', room: to })
+      });
+      if (tokenRes.ok) {
+        const { token } = await tokenRes.json();
+        // create local track and connect
+        const localTrack = await createLocalVideoTrack();
+        localStreamRef.current = new MediaStream([localTrack.mediaStreamTrack]);
+        if (localVideoRef.current) { localVideoRef.current.srcObject = localStreamRef.current; localVideoRef.current.play().catch(()=>{}); }
+        const room = await twilioConnect(token, { name: to, tracks: [localTrack] });
+        twilioRoomRef.current = room;
+        console.log('[twilio] connected to room', room.name, room.sid);
+        // attach existing participants' video
+        room.participants.forEach(participant => {
+          participant.tracks.forEach(publication => {
+            if (publication.isSubscribed) {
+              const track = publication.track;
+              if (track.kind === 'video' && remoteVideoRef.current) track.attach(remoteVideoRef.current);
+            }
+          });
+          participant.on('trackSubscribed', track => { if (track.kind === 'video' && remoteVideoRef.current) track.attach(remoteVideoRef.current); });
+        });
+        room.on('participantConnected', participant => {
+          participant.on('trackSubscribed', track => { if (track.kind === 'video' && remoteVideoRef.current) track.attach(remoteVideoRef.current); });
+        });
+        setCallState('calling');
+        return;
+      }
+    } catch (twErr) {
+      console.warn('Twilio connect failed, falling back to peer-to-peer', twErr);
+    }
+    // Fallback: existing peer-to-peer flow
     try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       localStreamRef.current = stream;
@@ -81,64 +119,24 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       }
 
       console.log('[startCall] local tracks', stream.getTracks().map(t => ({ id: t.id, kind: t.kind, enabled: t.enabled, muted: t.muted, readyState: t.readyState, settings: typeof t.getSettings === 'function' ? t.getSettings() : undefined })));
-      // draw a quick local snapshot to help determine if local frames are black
       try { setTimeout(() => snapshotLocalFrame(), 300); } catch (e) {}
 
       pcRef.current = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-      // remember who sent the offer so we can send control messages back
-      pcRef.current.remoteUser = from;
-
       pcRef.current.onicecandidate = (e) => {
-        if (e.candidate) {
-          console.log('[pc] local ice candidate ->', e.candidate);
-          sendSignal('ice', { to, candidate: e.candidate });
-        }
+        if (e.candidate) { console.log('[pc] local ice candidate ->', e.candidate); sendSignal('ice', { to, candidate: e.candidate }); }
       };
-
       pcRef.current.ontrack = (e) => {
-        console.log('[pc] ontrack, streams:', e.streams);
-        try {
-          const stream = e.streams && e.streams[0];
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = stream;
-            // attach debug event handlers to help diagnose black-screen issues on mobile
-            remoteVideoRef.current.onloadeddata = () => console.log('[video] remote loadeddata', { readyState: remoteVideoRef.current.readyState, paused: remoteVideoRef.current.paused });
-            remoteVideoRef.current.onplaying = () => {
-              console.log('[video] remote playing');
-              snapshotRemoteFrame();
-            };
-            remoteVideoRef.current.onpause = () => console.log('[video] remote paused');
-            remoteVideoRef.current.onerror = (ev) => console.error('[video] remote error', ev);
-            // log tracks
-            try { console.log('[video] remote tracks', stream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled }))); } catch (err) {}
-          }
-        } catch (err) { console.error('ontrack handling failed', err); }
+        const stream = e.streams && e.streams[0];
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
       };
-
       stream.getTracks().forEach((t) => pcRef.current.addTrack(t, stream));
-
-      // ensure tracks are enabled (not muted) before creating offer
-      try {
-        stream.getTracks().forEach(t => { if (typeof t.enabled !== 'undefined') t.enabled = true; });
-        console.log('[startCall] ensured local tracks enabled');
-      } catch (e) { console.warn('Could not enable tracks', e); }
-
+      try { stream.getTracks().forEach(t => { if (typeof t.enabled !== 'undefined') t.enabled = true; }); console.log('[startCall] ensured local tracks enabled'); } catch (e) {}
       const offer = await pcRef.current.createOffer();
       await pcRef.current.setLocalDescription(offer);
-      // Ask senders to produce a keyframe if supported (avoids black first frame issues)
-      try {
-        (pcRef.current.getSenders() || []).forEach(s => {
-          try {
-            if (typeof s.requestKeyFrame === 'function') { s.requestKeyFrame(); console.log('[startCall] requested keyframe on sender', s); }
-            else if (s.track && s.track.kind === 'video' && s.track.enabled) { console.log('[startCall] sender has video track (no requestKeyFrame API)'); }
-          } catch (err) { console.warn('[startCall] requestKeyFrame failed', err); }
-        });
-      } catch (e) { console.warn('requestKeyFrame loop failed', e); }
+      try { (pcRef.current.getSenders() || []).forEach(s => { if (typeof s.requestKeyFrame === 'function') { s.requestKeyFrame(); console.log('[startCall] requested keyframe on sender', s); } }); } catch (e) {}
       await sendSignal('call', { to, offer: pcRef.current.localDescription });
       setCallState('calling');
-    } catch (err) {
-      console.error('Error starting call:', err);
-    }
+    } catch (err) { console.error('Error starting call (fallback):', err); }
   };
 
   // Receiver: do NOT open camera. Create peer, set remote desc, answer.
@@ -187,6 +185,28 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         console.warn('acceptIncoming: offer.type missing, defaulting to "offer"');
         offer = { ...offer, type: 'offer' };
       }
+      // Try Twilio: join room instead of answering SDP
+      try {
+        const roomId = otherId() || from;
+        const SIGNALING_URL = process.env.REACT_APP_SIGNALING_URL || '';
+        const base = SIGNALING_URL.replace(/\/$/, '') || '';
+        const tokenRes = await fetch((base || '') + '/api/twilio/token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identity: authUser?._id || 'guest', room: roomId }) });
+        if (tokenRes.ok) {
+          const { token } = await tokenRes.json();
+          // connect without publishing local tracks (receiver only)
+          const room = await twilioConnect(token, { name: roomId, tracks: [] });
+          twilioRoomRef.current = room;
+          console.log('[twilio] connected as viewer to room', roomId);
+          room.participants.forEach(participant => {
+            participant.tracks.forEach(pub => { if (pub.isSubscribed && pub.track.kind === 'video' && remoteVideoRef.current) pub.track.attach(remoteVideoRef.current); });
+            participant.on('trackSubscribed', track => { if (track.kind === 'video' && remoteVideoRef.current) track.attach(remoteVideoRef.current); });
+          });
+          room.on('participantConnected', participant => { participant.on('trackSubscribed', track => { if (track.kind === 'video' && remoteVideoRef.current) track.attach(remoteVideoRef.current); }); });
+          stopRingtone(); setIncoming(null); setCallState('in-call');
+          return;
+        }
+      } catch (twe) { console.warn('Twilio join failed, falling back to SDP answer', twe); }
+
       pcRef.current = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
 
       pcRef.current.onicecandidate = (e) => {
@@ -253,6 +273,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
 
   const endCall = () => {
     try { pcRef.current?.close(); } catch (e) {}
+    try { if (twilioRoomRef.current) { twilioRoomRef.current.disconnect(); twilioRoomRef.current = null; } } catch (e) {}
     try { localStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch (e) {}
     try { if (localVideoRef.current) localVideoRef.current.srcObject = null; } catch (e) {}
     try { if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null; } catch (e) {}
