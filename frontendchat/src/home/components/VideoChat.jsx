@@ -48,7 +48,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     // HTTP fallback
     try {
       const endpointMap = { call: '/api/signal/call', answer: '/api/signal/answer', ice: '/api/signal/ice', end: '/api/signal/end' };
-      const SIGNALING_URL = process.env.REACT_APP_SIGNALING_URL || (typeof window !== 'undefined' && window.location && window.location.origin) || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+      const SIGNALING_URL = (typeof window !== 'undefined' && window.location && window.location.origin) || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
       const base = SIGNALING_URL.replace(/\/$/, '');
       const url = `${base}${endpointMap[type]}`;
       console.warn('Using HTTP fallback to', url);
@@ -142,6 +142,9 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         }
       };
 
+      // help debug signaling state transitions
+      pcRef.current.onsignalingstatechange = () => console.log('[pc] signalingState ->', pcRef.current.signalingState);
+
       pcRef.current.ontrack = (e) => {
         console.log('[pc] ontrack (receiver), streams:', e.streams);
         try {
@@ -156,9 +159,17 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         } catch (err) { console.error('ontrack (receiver) handling failed', err); }
       };
 
-      await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
+      console.log('[acceptIncoming] remote offer type:', offer.type, 'sdp length:', offer.sdp ? offer.sdp.length : 0);
+      // use plain object for setRemoteDescription (avoids some browser inconsistencies)
+      await pcRef.current.setRemoteDescription(offer);
+      console.log('[acceptIncoming] after setRemoteDescription signalingState:', pcRef.current.signalingState);
       const answer = await pcRef.current.createAnswer();
-      await pcRef.current.setLocalDescription(answer);
+      try {
+        await pcRef.current.setLocalDescription(answer);
+      } catch (err) {
+        console.error('[acceptIncoming] setLocalDescription failed', err, 'signalingState:', pcRef.current.signalingState);
+        throw err;
+      }
       await sendSignal('answer', { to: from, answer: pcRef.current.localDescription });
       // stop ringtone when answering
       stopRingtone();
@@ -197,7 +208,13 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       // auto-answer incoming calls (receiver will NOT open local camera)
       acceptIncoming(inc);
     };
-    const handleAnswered = async ({ answer }) => { try { await pcRef.current?.setRemoteDescription(new RTCSessionDescription(answer)); setCallState('in-call'); } catch (e) { console.error(e); } };
+    const handleAnswered = async ({ answer }) => {
+      try {
+        console.log('[handleAnswered] received answer, length:', answer?.sdp?.length || 0);
+        await pcRef.current?.setRemoteDescription(answer);
+        setCallState('in-call');
+      } catch (e) { console.error('[handleAnswered] setRemoteDescription failed', e); }
+    };
     const handleRemoteIce = async ({ candidate }) => { try { await pcRef.current?.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) { console.error(e); } };
 
     socket.on('incoming-call', handleIncoming);
@@ -336,3 +353,4 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
 };
 
 export default VideoChat;
+
