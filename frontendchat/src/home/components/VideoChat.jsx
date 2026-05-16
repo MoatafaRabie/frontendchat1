@@ -48,7 +48,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     // HTTP fallback
     try {
       const endpointMap = { call: '/api/signal/call', answer: '/api/signal/answer', ice: '/api/signal/ice', end: '/api/signal/end' };
-      const SIGNALING_URL = (typeof window !== 'undefined' && window.location && window.location.origin) || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
+      const SIGNALING_URL =  (typeof window !== 'undefined' && window.location && window.location.origin) || 'https://vulnerable-abagail-personalllllll-3a6b55d5.koyeb.app';
       const base = SIGNALING_URL.replace(/\/$/, '');
       const url = `${base}${endpointMap[type]}`;
       console.warn('Using HTTP fallback to', url);
@@ -112,6 +112,30 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   };
 
   // Receiver: do NOT open camera. Create peer, set remote desc, answer.
+  // Helper: wait for a specific signalingState on the RTCPeerConnection
+  const waitForSignalingState = (pc, desiredState, timeout = 3000) => {
+    return new Promise((resolve) => {
+      if (!pc) return resolve(false);
+      if (pc.signalingState === desiredState) return resolve(true);
+      let done = false;
+      const onChange = () => {
+        if (pc.signalingState === desiredState && !done) {
+          done = true;
+          pc.removeEventListener('signalingstatechange', onChange);
+          resolve(true);
+        }
+      };
+      pc.addEventListener('signalingstatechange', onChange);
+      setTimeout(() => {
+        if (!done) {
+          done = true;
+          try { pc.removeEventListener('signalingstatechange', onChange); } catch (e) {}
+          resolve(false);
+        }
+      }, timeout);
+    });
+  };
+
   const acceptIncoming = async (incomingParam = null) => {
     let inc = incomingParam || incoming;
     // If this was bound directly to an onClick, React may pass the click event as first arg.
@@ -142,6 +166,9 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         }
       };
 
+      pcRef.current.oniceconnectionstatechange = () => console.log('[pc] iceConnectionState ->', pcRef.current.iceConnectionState);
+      pcRef.current.onconnectionstatechange = () => console.log('[pc] connectionState ->', pcRef.current.connectionState);
+
       // help debug signaling state transitions
       pcRef.current.onsignalingstatechange = () => console.log('[pc] signalingState ->', pcRef.current.signalingState);
 
@@ -163,6 +190,11 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       // use plain object for setRemoteDescription (avoids some browser inconsistencies)
       await pcRef.current.setRemoteDescription(offer);
       console.log('[acceptIncoming] after setRemoteDescription signalingState:', pcRef.current.signalingState);
+
+      // wait briefly for signaling state to settle to have-remote-offer (avoid InvalidStateError)
+      const okState = await waitForSignalingState(pcRef.current, 'have-remote-offer', 3000);
+      if (!okState) console.warn('[acceptIncoming] signalingState did not reach have-remote-offer, current:', pcRef.current.signalingState);
+
       const answer = await pcRef.current.createAnswer();
       try {
         await pcRef.current.setLocalDescription(answer);
@@ -353,4 +385,3 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
 };
 
 export default VideoChat;
-
