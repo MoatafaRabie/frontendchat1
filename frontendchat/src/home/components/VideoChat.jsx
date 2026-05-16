@@ -178,10 +178,19 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
           const stream = e.streams && e.streams[0];
           if (remoteVideoRef.current) {
             remoteVideoRef.current.srcObject = stream;
-            remoteVideoRef.current.onloadeddata = () => console.log('[video] remote loadeddata', { readyState: remoteVideoRef.current.readyState });
+            // try to force playback in case autoplay didn't start
+            try {
+              remoteVideoRef.current.play().then(() => console.log('[video] play() succeeded')).catch((err) => console.warn('[video] play() rejected', err));
+            } catch (err) { console.warn('[video] play() exception', err); }
+            remoteVideoRef.current.onloadeddata = () => console.log('[video] remote loadeddata', { readyState: remoteVideoRef.current.readyState, videoWidth: remoteVideoRef.current.videoWidth, videoHeight: remoteVideoRef.current.videoHeight });
+            remoteVideoRef.current.onloadedmetadata = () => console.log('[video] remote loadedmetadata', { videoWidth: remoteVideoRef.current.videoWidth, videoHeight: remoteVideoRef.current.videoHeight });
             remoteVideoRef.current.onplaying = () => { console.log('[video] remote playing'); snapshotRemoteFrame(); };
             remoteVideoRef.current.onerror = (ev) => console.error('[video] remote error', ev);
-            try { console.log('[video] remote tracks', stream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled }))); } catch (err) {}
+            try {
+              console.log('[video] remote tracks', stream.getTracks().map(t => ({ id: t.id, kind: t.kind, enabled: t.enabled, muted: t.muted, readyState: t.readyState, settings: typeof t.getSettings === 'function' ? t.getSettings() : undefined })));
+            } catch (err) { console.warn('[video] track log failed', err); }
+            // schedule an additional snapshot shortly after to detect black frames
+            setTimeout(() => snapshotRemoteFrame(), 700);
           }
         } catch (err) { console.error('ontrack (receiver) handling failed', err); }
       };
