@@ -112,8 +112,23 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
 
       stream.getTracks().forEach((t) => pcRef.current.addTrack(t, stream));
 
+      // ensure tracks are enabled (not muted) before creating offer
+      try {
+        stream.getTracks().forEach(t => { if (typeof t.enabled !== 'undefined') t.enabled = true; });
+        console.log('[startCall] ensured local tracks enabled');
+      } catch (e) { console.warn('Could not enable tracks', e); }
+
       const offer = await pcRef.current.createOffer();
       await pcRef.current.setLocalDescription(offer);
+      // Ask senders to produce a keyframe if supported (avoids black first frame issues)
+      try {
+        (pcRef.current.getSenders() || []).forEach(s => {
+          try {
+            if (typeof s.requestKeyFrame === 'function') { s.requestKeyFrame(); console.log('[startCall] requested keyframe on sender', s); }
+            else if (s.track && s.track.kind === 'video' && s.track.enabled) { console.log('[startCall] sender has video track (no requestKeyFrame API)'); }
+          } catch (err) { console.warn('[startCall] requestKeyFrame failed', err); }
+        });
+      } catch (e) { console.warn('requestKeyFrame loop failed', e); }
       await sendSignal('call', { to, offer: pcRef.current.localDescription });
       setCallState('calling');
     } catch (err) {
