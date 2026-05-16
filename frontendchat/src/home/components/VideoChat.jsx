@@ -34,6 +34,9 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
           case 'ice':
             socket.emit('ice-candidate', { to: payload.to, candidate: payload.candidate, from: payload.from });
             return true;
+          case 'control':
+            socket.emit('video-control', { to: payload.to, action: payload.action, from: payload.from });
+            return true;
           case 'end':
             socket.emit('end-call', { to: payload.to, from: payload.from });
             return true;
@@ -82,6 +85,8 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       try { setTimeout(() => snapshotLocalFrame(), 300); } catch (e) {}
 
       pcRef.current = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      // remember who sent the offer so we can send control messages back
+      pcRef.current.remoteUser = from;
 
       pcRef.current.onicecandidate = (e) => {
         if (e.candidate) {
@@ -282,10 +287,25 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       } catch (e) { console.error('[handleAnswered] setRemoteDescription failed', e); }
     };
     const handleRemoteIce = async ({ candidate }) => { try { await pcRef.current?.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) { console.error(e); } };
+    const handleVideoControl = async ({ from, action }) => {
+      try {
+        console.log('[handleVideoControl] from', from, 'action', action);
+        if (action === 'request-keyframe') {
+          const senders = pcRef.current?.getSenders() || [];
+          senders.forEach(s => {
+            try {
+              if (typeof s.requestKeyFrame === 'function') { s.requestKeyFrame(); console.log('[handleVideoControl] requested keyframe on sender', s); }
+              else if (s.replaceTrack && s.track) { s.replaceTrack(s.track).then(()=>console.log('[handleVideoControl] replaced track to force keyframe')).catch(()=>{}); }
+            } catch (e) { console.warn('[handleVideoControl] request failed', e); }
+          });
+        }
+      } catch (e) { console.error('[handleVideoControl] failed', e); }
+    };
 
     socket.on('incoming-call', handleIncoming);
     socket.on('call-answered', handleAnswered);
     socket.on('ice-candidate', handleRemoteIce);
+    socket.on('video-control', handleVideoControl);
     socket.on('call-ended', endCall);
 
     // Do not auto-start outgoing calls; user must click Start Call.
@@ -297,6 +317,7 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       socket.off('incoming-call', handleIncoming);
       socket.off('call-answered', handleAnswered);
       socket.off('ice-candidate', handleRemoteIce);
+      socket.off('video-control', handleVideoControl);
       socket.off('call-ended', endCall);
       endCall();
     };
@@ -358,7 +379,26 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
       const data = ctx.getImageData(px, py, 1, 1).data;
       const avg = (data[0] + data[1] + data[2]) / 3;
       console.log('[video-snapshot] size', w, h, 'center RGBA', data, 'avg', avg);
-      if (avg < 8) console.warn('[video-snapshot] frame appears nearly black (avg<8)');
+      if (avg < 8) {
+        console.warn('[video-snapshot] frame appears nearly black (avg<8)');
+        try {
+          // attempt quick rebind of srcObject to force a repaint
+          const v = remoteVideoRef.current;
+          if (v) {
+            const s = v.srcObject;
+            v.srcObject = null;
+            setTimeout(() => { v.srcObject = s; try { v.play().catch(()=>{}); } catch(e){} }, 200);
+          }
+        } catch (e) { console.warn('rebind remote video failed', e); }
+        // request a keyframe from the sender via signaling
+        try {
+          const target = pcRef.current && pcRef.current.remoteUser;
+          if (target) {
+            console.log('[video-snapshot] requesting keyframe from', target);
+            sendSignal('control', { to: target, action: 'request-keyframe' });
+          }
+        } catch (e) { console.warn('requesting keyframe failed', e); }
+      }
     } catch (e) {
       console.error('snapshotRemoteFrame failed', e);
     }
