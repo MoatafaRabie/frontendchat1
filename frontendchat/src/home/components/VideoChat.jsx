@@ -12,6 +12,8 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
   const pcRef = useRef(null);
   const twilioRoomRef = useRef(null);
   const localStreamRef = useRef(null);
+  const remotePlayLockRef = useRef(false);
+  const remoteRebindTimerRef = useRef(null);
   const { socket } = useSocketContext();
   const { selectedConversation } = useConversation();
   const [callState, setCallState] = useState("idle"); // idle, calling, ringing, in-call
@@ -126,8 +128,19 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         if (e.candidate) { console.log('[pc] local ice candidate ->', e.candidate); sendSignal('ice', { to, candidate: e.candidate }); }
       };
       pcRef.current.ontrack = (e) => {
-        const stream = e.streams && e.streams[0];
-        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
+        try {
+          const stream = e.streams && e.streams[0];
+          if (!remoteVideoRef.current) return;
+          if (remoteRebindTimerRef.current) { clearTimeout(remoteRebindTimerRef.current); remoteRebindTimerRef.current = null; }
+          remoteVideoRef.current.srcObject = stream;
+          const onLoaded = () => {
+            try { remoteVideoRef.current.removeEventListener('loadedmetadata', onLoaded); } catch (e) {}
+            if (remotePlayLockRef.current) return;
+            remotePlayLockRef.current = true;
+            remoteVideoRef.current.play().then(() => { remotePlayLockRef.current = false; snapshotRemoteFrame(); console.log('[video] play() succeeded after loadedmetadata'); }).catch((err) => { remotePlayLockRef.current = false; console.warn('[video] play() rejected after loadedmetadata', err); });
+          };
+          remoteVideoRef.current.addEventListener('loadedmetadata', onLoaded);
+        } catch (err) { console.error('startCall ontrack handling failed', err); }
       };
       stream.getTracks().forEach((t) => pcRef.current.addTrack(t, stream));
       try { stream.getTracks().forEach(t => { if (typeof t.enabled !== 'undefined') t.enabled = true; }); console.log('[startCall] ensured local tracks enabled'); } catch (e) {}
@@ -226,22 +239,21 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
         console.log('[pc] ontrack (receiver), streams:', e.streams);
         try {
           const stream = e.streams && e.streams[0];
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = stream;
-            // try to force playback in case autoplay didn't start
-            try {
-              remoteVideoRef.current.play().then(() => console.log('[video] play() succeeded')).catch((err) => console.warn('[video] play() rejected', err));
-            } catch (err) { console.warn('[video] play() exception', err); }
-            remoteVideoRef.current.onloadeddata = () => console.log('[video] remote loadeddata', { readyState: remoteVideoRef.current.readyState, videoWidth: remoteVideoRef.current.videoWidth, videoHeight: remoteVideoRef.current.videoHeight });
-            remoteVideoRef.current.onloadedmetadata = () => console.log('[video] remote loadedmetadata', { videoWidth: remoteVideoRef.current.videoWidth, videoHeight: remoteVideoRef.current.videoHeight });
-            remoteVideoRef.current.onplaying = () => { console.log('[video] remote playing'); snapshotRemoteFrame(); };
-            remoteVideoRef.current.onerror = (ev) => console.error('[video] remote error', ev);
-            try {
-              console.log('[video] remote tracks', stream.getTracks().map(t => ({ id: t.id, kind: t.kind, enabled: t.enabled, muted: t.muted, readyState: t.readyState, settings: typeof t.getSettings === 'function' ? t.getSettings() : undefined })));
-            } catch (err) { console.warn('[video] track log failed', err); }
-            // schedule an additional snapshot shortly after to detect black frames
-            setTimeout(() => snapshotRemoteFrame(), 700);
-          }
+          if (!remoteVideoRef.current) return;
+          if (remoteRebindTimerRef.current) { clearTimeout(remoteRebindTimerRef.current); remoteRebindTimerRef.current = null; }
+          remoteVideoRef.current.srcObject = stream;
+          const onLoaded = () => {
+            try { remoteVideoRef.current.removeEventListener('loadedmetadata', onLoaded); } catch (e) {}
+            if (remotePlayLockRef.current) return;
+            remotePlayLockRef.current = true;
+            remoteVideoRef.current.play().then(() => { console.log('[video] play() succeeded after loadedmetadata'); remotePlayLockRef.current = false; snapshotRemoteFrame(); }).catch((err) => { console.warn('[video] play() rejected after loadedmetadata', err); remotePlayLockRef.current = false; });
+          };
+          remoteVideoRef.current.addEventListener('loadedmetadata', onLoaded);
+          remoteVideoRef.current.onplaying = () => { console.log('[video] remote playing'); };
+          remoteVideoRef.current.onerror = (ev) => console.error('[video] remote error', ev);
+          try { console.log('[video] remote tracks', stream.getTracks().map(t => ({ id: t.id, kind: t.kind, enabled: t.enabled, muted: t.muted, readyState: t.readyState }))); } catch (err) { console.warn('[video] track log failed', err); }
+          // schedule an additional snapshot shortly after to detect black frames
+          setTimeout(() => snapshotRemoteFrame(), 700);
         } catch (err) { console.error('ontrack (receiver) handling failed', err); }
       };
 
