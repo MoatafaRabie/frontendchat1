@@ -69,7 +69,17 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       localStreamRef.current = stream;
-      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+        try {
+          localVideoRef.current.play().then(() => console.log('[local video] play() succeeded')).catch((err) => console.warn('[local video] play() rejected', err));
+        } catch (err) { console.warn('[local video] play() exception', err); }
+        localVideoRef.current.onloadeddata = () => console.log('[local video] loadeddata', { videoWidth: localVideoRef.current.videoWidth, videoHeight: localVideoRef.current.videoHeight });
+      }
+
+      console.log('[startCall] local tracks', stream.getTracks().map(t => ({ id: t.id, kind: t.kind, enabled: t.enabled, muted: t.muted, readyState: t.readyState, settings: typeof t.getSettings === 'function' ? t.getSettings() : undefined })));
+      // draw a quick local snapshot to help determine if local frames are black
+      try { setTimeout(() => snapshotLocalFrame(), 300); } catch (e) {}
 
       pcRef.current = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
 
@@ -337,6 +347,26 @@ const VideoChat = ({ visible, onClose, initialIncoming = null }) => {
     } catch (e) {
       console.error('snapshotRemoteFrame failed', e);
     }
+  };
+
+  const snapshotLocalFrame = () => {
+    try {
+      const v = localVideoRef.current;
+      const c = debugCanvasRef.current;
+      if (!v || !c) return;
+      const w = v.videoWidth || 320;
+      const h = v.videoHeight || 240;
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(v, 0, 0, w, h);
+      const px = Math.floor(w / 2);
+      const py = Math.floor(h / 2);
+      const data = ctx.getImageData(px, py, 1, 1).data;
+      const avg = (data[0] + data[1] + data[2]) / 3;
+      console.log('[local-video-snapshot] size', w, h, 'center RGBA', data, 'avg', avg);
+      if (avg < 8) console.warn('[local-video-snapshot] local frame appears nearly black (avg<8)');
+    } catch (e) { console.error('snapshotLocalFrame failed', e); }
   };
 
   if (!visible) return null;
